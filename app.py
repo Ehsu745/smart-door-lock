@@ -1,17 +1,26 @@
-"""樹莓派人臉辨識門鎖雛形：Pi 5 + Pi 相機（Picamera2）+ USB 連接 Arduino 控制繼電器。
+"""樹莓派人臉 + 手勢雙重驗證門鎖：Pi 5 + Pi 相機 + MediaPipe 手勢 + USB 連接 Arduino 控制繼電器。
+
+開鎖流程：認出已登錄的人臉 → 畫面提示比手勢 → 在時限內比出指定手勢（預設 👍 或 ✌️）→ 開鎖。
+執行環境：Python 3.9–3.12（MediaPipe 尚無 Python 3.13 的 ARM 版），詳見 SETUP.md。
 
 用法（在 app.py 所在資料夾）：
   python3 app.py                 互動選單
   python3 app.py capture yang    採集 yang 的人臉 30 張
   python3 app.py train           以 faces/ 訓練 LBPH 模型
   python3 app.py run             啟動辨識 + 網頁控制台 + Arduino 控制
-  python3 app.py test-arduino    只測試 Arduino：上鎖 → 解鎖 → 等待自動上鎖
+  python3 app.py run --sim       同上，但不接 Arduino，用文字模擬開鎖/上鎖
+  python3 app.py test-camera     只測相機：FPS、人臉偵測、辨識距離，存 camera_test.jpg
+  python3 app.py test-arduino    只測試 Arduino：上鎖 → 解鎖 → 等待 8 秒自動上鎖
+  python3 app.py test-gesture    只測手勢：即時顯示偵測到的手勢與信心值，存 gesture_test.jpg
 
 資料沿用舊版格式：faces/<ID>_*.jpg、face.yml、id_map.txt（編號:名字:master|guest）。
 """
 import glob
+import math
 import os
 import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -42,8 +51,35 @@ THRESHOLD = float(os.environ.get('FACE_THRESHOLD', 70))   # LBPH 距離，越低
 REQUIRED_FRAMES = 8             # 同一人連續通過幾幀才解鎖
 REARM_SECONDS = 3               # 人離開鏡頭幾秒後才允許再次自動解鎖
 ARDUINO_PORT = os.environ.get('ARDUINO_PORT')             # 不設定則自動尋找
-BAUD = 9600                     # 需與 door_lock.ino 的 Serial.begin 一致
+BAUD = int(os.environ.get('ARDUINO_BAUD', 9600))           # 需與 Arduino 的 Serial.begin 一致
+# 送給 Arduino 的文字，預設與學弟在電腦 Serial Monitor 輸入的相同
+CMD_TEXT = {'UNLOCK': os.environ.get('CMD_UNLOCK', 'unlock'),
+            'LOCK': os.environ.get('CMD_LOCK', 'lock')}
+CMD_EOL = {'lf': '\n', 'crlf': '\r\n', 'cr': '\r', 'none': ''}[os.environ.get('CMD_EOL', 'lf')]
+# 1（預設）= 必須收到含 unlock/lock 字樣的回覆才算成功（學弟的 sketch 會回 Unlocked.../Locked）
+# 0 = 送出即算成功，適用於不回覆文字的 Arduino 程式
+ACK_STRICT = os.environ.get('ARDUINO_STRICT', '1') == '1'
+UNLOCK_SECONDS = 8              # 與 door_lock.ino 的 UNLOCK_DURATION（8000 ms）一致；只用於模擬與測試顯示
 WEB_PORT = int(os.environ.get('WEB_PORT', 5050))
+
+# ---- 相機 ----
+# auto：Linux 上有 rpicam-vid 就用 Pi 相機，其次 Picamera2，最後 USB/內建 webcam（Mac）
+CAMERA = os.environ.get('CAMERA', 'auto')            # auto | rpicam | picamera2 | usb
+CAMERA_INDEX = int(os.environ.get('CAMERA_INDEX', 0))  # USB / Mac 鏡頭編號；Mac 接續互通相機可能讓 0 變成 iPhone
+
+# ---- 手勢（MediaPipe）----
+REQUIRE_GESTURE = os.environ.get('REQUIRE_GESTURE', '1') == '1'    # 0 = 關閉手勢，只用人臉開門（舊版行為）
+ALLOWED_GESTURES = [g.strip() for g in os.environ.get('ALLOWED_GESTURES', 'Thumb_Up,Victory').split(',') if g.strip()]
+GESTURE_SCORE = float(os.environ.get('GESTURE_SCORE', 0.6))      # 手勢信心值門檻（0–1）
+GESTURE_FRAMES = int(os.environ.get('GESTURE_FRAMES', 5))        # 連續幾幀都是同一個合格手勢才算數
+GESTURE_WINDOW = float(os.environ.get('GESTURE_WINDOW', 8))      # 人臉通過後，幾秒內要比出手勢
+FACE_GRACE = 3.0                # 比手勢時手可能擋到臉；人臉消失超過這麼久才取消
+RETRY_COOLDOWN = 3.0            # 手勢逾時後，隔幾秒才重新開始
+GESTURE_MODEL = BASE / 'models' / 'gesture_recognizer.task'
+GESTURE_MODEL_URL = ('https://storage.googleapis.com/mediapipe-models/gesture_recognizer/'
+                     'gesture_recognizer/float16/latest/gesture_recognizer.task')
+GESTURE_EMOJI = {'Thumb_Up': '👍', 'Thumb_Down': '👎', 'Victory': '✌️', 'Open_Palm': '✋',
+                 'Closed_Fist': '✊', 'Pointing_Up': '☝️', 'ILoveYou': '🤟'}
 
 
 def log(msg):
@@ -91,45 +127,133 @@ def read_map():
 
 
 def has_display():
+    if sys.platform == 'darwin':          # macOS 沒有 DISPLAY 變數，但一定有桌面
+        return True
     return bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))
 
 
 # ==========================================
-# 相機：優先 Pi 相機（Picamera2），沒有時改用 USB webcam
+# 相機：Pi 相機（rpicam-vid 或 Picamera2）或 USB / Mac 內建 webcam
 # ==========================================
+class RpicamCamera:
+    """用 rpicam-vid 把 Pi 相機的 YUV420 原始畫面輸出到 stdout，背景執行緒持續讀最新一幀。
+    不需要 Picamera2 / libcamera 的 Python 套件，所以任何 Python 版本（含 MediaPipe 用的 3.11）都能用。"""
+
+    def __init__(self, size=FRAME_SIZE):
+        self.w, self.h = size
+        self.frame_bytes = self.w * self.h * 3 // 2
+        cmd = ['rpicam-vid', '-t', '0', '-n', '--codec', 'yuv420', '--width', str(self.w),
+               '--height', str(self.h), '--framerate', '30', '--flush', '-o', '-']
+        self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+        self.latest = None
+        self.seq = 0
+        self.cond = threading.Condition()
+        self.alive = True
+        threading.Thread(target=self._reader, daemon=True).start()
+        deadline = time.monotonic() + 8
+        with self.cond:
+            while self.latest is None and time.monotonic() < deadline and self.proc.poll() is None:
+                self.cond.wait(0.2)
+        if self.latest is None:
+            self.close()
+            raise RuntimeError('rpicam-vid 沒有輸出畫面：確認 rpicam-hello --list-cameras 看得到相機，'
+                               '且沒有其他程式正在使用相機')
+
+    def _read_exact(self, n):
+        buf = bytearray()
+        while len(buf) < n:
+            chunk = self.proc.stdout.read(n - len(buf))
+            if not chunk:
+                return None
+            buf += chunk
+        return bytes(buf)
+
+    def _reader(self):
+        while self.alive:
+            raw = self._read_exact(self.frame_bytes)
+            if raw is None:
+                break
+            yuv = np.frombuffer(raw, np.uint8).reshape(self.h * 3 // 2, self.w)
+            frame = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
+            with self.cond:
+                self.latest = frame
+                self.seq += 1
+                self.cond.notify_all()
+        self.alive = False
+        with self.cond:
+            self.cond.notify_all()
+
+    def read(self):
+        """回傳比上一次更新的畫面（等最多 1 秒），讀不到回傳 None。"""
+        with self.cond:
+            last = getattr(self, '_last_seq', 0)
+            self.cond.wait_for(lambda: self.seq != last or not self.alive, timeout=1.0)
+            if self.seq == last:
+                return None
+            self._last_seq = self.seq
+            return self.latest.copy()
+
+    def close(self):
+        self.alive = False
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+
+
 class Camera:
     def __init__(self):
+        self.impl = None
         self.picam = None
         self.cap = None
-        try:
-            from picamera2 import Picamera2
-            if Picamera2.global_camera_info():
-                self.picam = Picamera2()
-                config = self.picam.create_video_configuration(
-                    main={'size': FRAME_SIZE, 'format': 'RGB888'})   # RGB888 的記憶體順序即 BGR
-                self.picam.configure(config)
-                self.picam.start()
-                time.sleep(1)                                         # 自動曝光暖機
-                log('相機：Pi 相機（Picamera2）')
+        want = CAMERA
+        if want in ('auto', 'rpicam') and sys.platform.startswith('linux') and shutil.which('rpicam-vid'):
+            try:
+                self.impl = RpicamCamera()
+                log('相機：Pi 相機（rpicam-vid）')
                 return
-            log('Picamera2 沒有偵測到 Pi 相機，改試 USB webcam')
-        except ImportError:
-            log('沒有 picamera2 套件，改試 USB webcam')
-        self.cap = cv2.VideoCapture(0)
+            except RuntimeError as exc:
+                if want == 'rpicam':
+                    raise
+                log(f'rpicam-vid 失敗（{exc}），改試其他方式')
+        if want in ('auto', 'picamera2'):
+            try:
+                from picamera2 import Picamera2
+                if Picamera2.global_camera_info():
+                    self.picam = Picamera2()
+                    self.picam.configure(self.picam.create_video_configuration(
+                        main={'size': FRAME_SIZE, 'format': 'RGB888'}))      # RGB888 的記憶體順序即 BGR
+                    self.picam.start()
+                    time.sleep(1)
+                    log('相機：Pi 相機（Picamera2）')
+                    return
+            except ImportError:
+                if want == 'picamera2':
+                    raise RuntimeError('這個 Python 環境沒有 picamera2')
+        self.cap = cv2.VideoCapture(CAMERA_INDEX)
         if not self.cap.isOpened():
+            if sys.platform == 'darwin':
+                raise RuntimeError(f'鏡頭 {CAMERA_INDEX} 無法開啟：到「系統設定 → 隱私權與安全性 → 相機」允許終端機 App，'
+                                   '重開終端機；或試 CAMERA_INDEX=1')
             raise RuntimeError('鏡頭無法開啟：先用 rpicam-hello --list-cameras 確認相機，'
                                '並關閉其他使用相機的程式')
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_SIZE[0])
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_SIZE[1])
-        log('相機：USB webcam')
+        log(f'相機：USB / 內建 webcam（編號 {CAMERA_INDEX}）')
 
     def read(self):
+        if self.impl is not None:
+            return self.impl.read()
         if self.picam is not None:
             return self.picam.capture_array()
         ok, frame = self.cap.read()
         return frame if ok else None
 
     def close(self):
+        if self.impl is not None:
+            self.impl.close()
         if self.picam is not None:
             self.picam.stop()
             self.picam.close()
@@ -148,6 +272,144 @@ def read_frame(camera, failures):
     else:
         failures[0] = 0
     return frame
+
+
+# ==========================================
+# 手勢辨識（MediaPipe）
+# ==========================================
+HAND_CONNECTIONS = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (5, 9), (9, 10),
+                    (10, 11), (11, 12), (9, 13), (13, 14), (14, 15), (15, 16), (13, 17), (0, 17),
+                    (17, 18), (18, 19), (19, 20)]
+
+
+def classify_landmarks(pts):
+    """備援用：以 MediaPipe Hands 的 21 個關鍵點（正規化座標，y 向下）判斷手勢。
+    回傳與 Gesture Recognizer 相同的類別名稱，無法判斷時回傳 None。"""
+    def d(a, b):
+        return math.hypot(pts[a][0] - pts[b][0], pts[a][1] - pts[b][1])
+    size = d(0, 9) or 1e-6                                   # 手腕到中指根部，當作手掌大小
+    extended = {f: d(tip, 0) > d(pip, 0) * 1.15              # 指尖比第二關節離手腕更遠 = 伸直
+                for f, (pip, tip) in {'index': (6, 8), 'middle': (10, 12), 'ring': (14, 16),
+                                      'pinky': (18, 20)}.items()}
+    thumb_out = d(4, 5) > size * 0.55 and d(4, 17) > d(3, 17)   # 拇指尖離食指根夠遠
+    n_fingers = sum(extended.values())
+    thumb_dy = (pts[2][1] - pts[4][1]) / size                # >0 表示拇指尖在拇指根上方
+    if n_fingers == 0 and thumb_out and thumb_dy > 0.6:
+        return 'Thumb_Up'
+    if n_fingers == 0 and thumb_out and thumb_dy < -0.6:
+        return 'Thumb_Down'
+    if extended['index'] and extended['middle'] and not extended['ring'] and not extended['pinky']:
+        return 'Victory'
+    if extended['index'] and not extended['middle'] and not extended['ring'] and extended['pinky']:
+        return 'ILoveYou' if thumb_out else None
+    if extended['index'] and n_fingers == 1:
+        return 'Pointing_Up'
+    if n_fingers == 4:
+        return 'Open_Palm'
+    if n_fingers == 0 and not thumb_out:
+        return 'Closed_Fist'
+    return None
+
+
+def ensure_gesture_model():
+    """沒有模型檔就自動下載（約 8 MB）；失敗回傳 False，改用備援模式。"""
+    if GESTURE_MODEL.exists() and GESTURE_MODEL.stat().st_size > 100_000:
+        return True
+    try:
+        import ssl
+        import urllib.request
+        try:                                   # macOS 的 python.org 版 Python 常缺根憑證，改用 certifi
+            import certifi
+            ctx = ssl.create_default_context(cafile=certifi.where())
+        except ImportError:
+            ctx = ssl.create_default_context()
+        GESTURE_MODEL.parent.mkdir(exist_ok=True)
+        log('下載 MediaPipe 手勢模型...')
+        tmp = GESTURE_MODEL.with_suffix('.part')
+        with urllib.request.urlopen(GESTURE_MODEL_URL, context=ctx, timeout=30) as resp, open(tmp, 'wb') as out:
+            shutil.copyfileobj(resp, out)
+        tmp.rename(GESTURE_MODEL)
+        log(f'手勢模型已存到 {GESTURE_MODEL}')
+        return True
+    except Exception as exc:
+        GESTURE_MODEL.with_suffix('.part').unlink(missing_ok=True)
+        log(f'手勢模型下載失敗（{exc}），改用備援模式：MediaPipe Hands + 關鍵點規則')
+        log(f'  可以手動下載：curl -L -o {GESTURE_MODEL} {GESTURE_MODEL_URL}')
+        return False
+
+
+class GestureDetector:
+    """優先使用 MediaPipe 官方 Gesture Recognizer；沒有模型檔時改用 MediaPipe Hands + 規則判斷。"""
+
+    def __init__(self):
+        try:
+            import mediapipe as mp
+        except ImportError:
+            v = f'{sys.version_info.major}.{sys.version_info.minor}'
+            raise RuntimeError(f'目前的 Python {v} 沒有 mediapipe：請在 Python 3.9–3.12 的 venv 執行 '
+                               'pip install -r requirements.txt（見 SETUP.md）。'
+                               '確認有先 source .venv/bin/activate')
+        self.mp = mp
+        self.recognizer = None
+        self.hands = None
+        self.last_ts = -1
+        self.t0 = time.monotonic()
+        if ensure_gesture_model():
+            try:
+                from mediapipe.tasks.python import BaseOptions, vision
+                options = vision.GestureRecognizerOptions(
+                    base_options=BaseOptions(model_asset_path=str(GESTURE_MODEL)),
+                    running_mode=vision.RunningMode.VIDEO, num_hands=1,
+                    min_hand_detection_confidence=0.5, min_hand_presence_confidence=0.5,
+                    min_tracking_confidence=0.5)
+                self.recognizer = vision.GestureRecognizer.create_from_options(options)
+                self.mode = 'MediaPipe Gesture Recognizer'
+            except Exception as exc:
+                log(f'手勢模型載入失敗（{exc}）：刪除 {GESTURE_MODEL} 後重新執行可重新下載；先改用備援模式')
+        if self.recognizer is None:
+            self.hands = mp.solutions.hands.Hands(static_image_mode=False, max_num_hands=1,
+                                                  model_complexity=0, min_detection_confidence=0.6,
+                                                  min_tracking_confidence=0.5)
+            self.mode = 'MediaPipe Hands + 規則'
+        log(f'手勢辨識：{self.mode}')
+
+    def detect(self, frame_bgr):
+        """回傳 (手勢名稱或 None, 信心值, 21 個關鍵點的像素座標或 None)"""
+        h, w = frame_bgr.shape[:2]
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        if self.recognizer is not None:
+            ts = max(int((time.monotonic() - self.t0) * 1000), self.last_ts + 1)   # VIDEO 模式時間戳必須遞增
+            self.last_ts = ts
+            image = self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=rgb)
+            result = self.recognizer.recognize_for_video(image, ts)
+            if not result.hand_landmarks:
+                return None, 0.0, None
+            pts = [(int(p.x * w), int(p.y * h)) for p in result.hand_landmarks[0]]
+            if result.gestures and result.gestures[0]:
+                top = result.gestures[0][0]
+                name = None if top.category_name in ('None', '') else top.category_name
+                return name, float(top.score), pts
+            return None, 0.0, pts
+        result = self.hands.process(rgb)
+        if not result.multi_hand_landmarks:
+            return None, 0.0, None
+        lm = result.multi_hand_landmarks[0].landmark
+        name = classify_landmarks([(p.x, p.y) for p in lm])
+        return name, (0.9 if name else 0.0), [(int(p.x * w), int(p.y * h)) for p in lm]
+
+    def close(self):
+        if self.recognizer is not None:
+            self.recognizer.close()
+        if self.hands is not None:
+            self.hands.close()
+
+
+def draw_hand(frame, pts, ok):
+    color = (0, 220, 0) if ok else (0, 200, 255)
+    for a, b in HAND_CONNECTIONS:
+        cv2.line(frame, pts[a], pts[b], color, 2)
+    for p in pts:
+        cv2.circle(frame, p, 3, (255, 255, 255), -1)
 
 
 # ==========================================
@@ -221,10 +483,9 @@ def train():
 
 
 # ==========================================
-# 3. Arduino 控制（USB serial，協定：送 UNLOCK/LOCK，回 UNLOCKED/LOCKED）
+# 3. Arduino 控制（USB serial，預設送 unlock / lock + 換行，與 Serial Monitor 手動輸入相同）
 # ==========================================
 class Arduino:
-    REPLY = {'UNLOCK': 'UNLOCKED', 'LOCK': 'LOCKED'}
 
     def __init__(self, port=ARDUINO_PORT, baud=BAUD):
         self.port_setting = port
@@ -237,7 +498,8 @@ class Arduino:
     def find_port(self):
         if self.port_setting:
             return self.port_setting
-        for pattern in ('/dev/serial/by-id/*', '/dev/ttyACM*', '/dev/ttyUSB*'):
+        for pattern in ('/dev/serial/by-id/*', '/dev/ttyACM*', '/dev/ttyUSB*',
+                        '/dev/cu.usbmodem*', '/dev/cu.usbserial*', '/dev/cu.wchusbserial*'):   # 後三個是 macOS
             found = sorted(glob.glob(pattern))
             if found:
                 return found[0]
@@ -255,19 +517,28 @@ class Arduino:
                 pass
         self.ser = None
 
-    def _exchange(self, command, timeout=1.5):
-        self.ser.reset_input_buffer()            # 丟掉 Arduino 自動上鎖時主動送出的 LOCKED
-        self.ser.write((command + '\n').encode('ascii'))
+    @staticmethod
+    def _matches(command, line):
+        low = line.lower()
+        if command == 'UNLOCK':
+            return 'unlock' in low or '開' in line
+        return ('lock' in low and 'unlock' not in low) or '關' in line or '上鎖' in line
+
+    def _exchange(self, command, timeout=1.0):
+        """送出指令並收集回覆。回傳 (是否確認, 回覆文字列表)。"""
+        self.ser.reset_input_buffer()            # 丟掉 Arduino 先前主動送出的訊息
+        self.ser.write((CMD_TEXT[command] + CMD_EOL).encode('utf-8'))
         self.ser.flush()
-        expected = self.REPLY[command]
+        replies = []
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            line = self.ser.readline().decode('ascii', errors='replace').strip()
-            if line == expected:
-                return True
-            if line.startswith('ERROR'):
-                log(f'Arduino 回報：{line}')
-        return False
+            line = self.ser.readline().decode('utf-8', errors='replace').strip()
+            if not line:
+                continue
+            replies.append(line)
+            if self._matches(command, line):
+                return True, replies
+        return False, replies
 
     def connect(self):
         with self.lock:
@@ -282,12 +553,15 @@ class Arduino:
             try:
                 self.ser = serial.Serial(port, self.baud, timeout=0.2, write_timeout=1)
                 time.sleep(2)                    # 開啟序列埠會讓 UNO 重新開機
-                if self._exchange('LOCK'):       # 用「上鎖」當握手：安全，且新舊韌體都支援
+                confirmed, replies = self._exchange('LOCK')   # 用「上鎖」當握手：最安全的狀態
+                if confirmed or not ACK_STRICT:
                     self.port = port
-                    self.status = f'已連線 {port}'
+                    note = '' if confirmed else (f'，回覆：{" / ".join(replies)}' if replies else '，Arduino 沒有回覆文字')
+                    self.status = f'已連線 {port}{note}'
                     log(f'Arduino {self.status}')
                     return True
-                self.status = f'{port} 有開啟但 Arduino 沒回應：確認已上傳 door_lock.ino、baud={self.baud}'
+                self.status = (f'{port} 有開啟但 Arduino 沒確認（回覆：{replies or "無"}）：'
+                               f'檢查 baud={self.baud}、指令文字與 Arduino 程式')
             except (serial.SerialException, OSError) as exc:
                 self.status = f'連線失敗：{exc}'
             self._close()
@@ -302,9 +576,14 @@ class Arduino:
             if self.ser is None and not self.connect():
                 return False, self.status
             try:
-                if self._exchange(command):
-                    return True, f'Arduino 已回覆 {self.REPLY[command]}'
-                return False, f'已送出 {command}，但 Arduino 未確認'
+                text = CMD_TEXT[command]
+                confirmed, replies = self._exchange(command)
+                reply = ' / '.join(replies) if replies else '無回覆'
+                if confirmed:
+                    return True, f'已送出 {text}，Arduino 回覆：{reply}'
+                if not ACK_STRICT:
+                    return True, f'已送出 {text}（Arduino 回覆：{reply}）'
+                return False, f'已送出 {text}，但 Arduino 未確認（{reply}）'
             except (serial.SerialException, OSError) as exc:
                 self._close()
                 self.status = f'連線中斷：{exc}'
@@ -326,6 +605,46 @@ class Arduino:
             self._close()
 
 
+class FakeArduino:
+    """模擬模式：不接 Arduino，用文字顯示門鎖動作；行為與 door_lock.ino 相同（解鎖後自動上鎖）。"""
+    UNLOCK_SECONDS = UNLOCK_SECONDS
+
+    def __init__(self):
+        self.status = '模擬模式（未接 Arduino）'
+        self.connected = True
+        self.lock = threading.Lock()
+        self.timer = None
+
+    def connect(self):
+        log('[模擬 Arduino] 已就緒 → 門鎖：上鎖')
+        return True
+
+    def _auto_lock(self):
+        log(f'[模擬 Arduino] {self.UNLOCK_SECONDS} 秒到 → 自動上鎖 🔒')
+
+    def send(self, command):
+        with self.lock:
+            if self.timer:
+                self.timer.cancel()
+                self.timer = None
+            if command == 'UNLOCK':
+                log(f'[模擬 Arduino] 繼電器 ON → 開鎖 🔓（{self.UNLOCK_SECONDS} 秒後自動上鎖）')
+                self.timer = threading.Timer(self.UNLOCK_SECONDS, self._auto_lock)
+                self.timer.daemon = True
+                self.timer.start()
+                return True, '[模擬] Arduino 開鎖'
+            log('[模擬 Arduino] 繼電器 OFF → 上鎖 🔒')
+            return True, '[模擬] Arduino 上鎖'
+
+    def watchdog(self, stop):
+        stop.wait()
+
+    def close(self):
+        with self.lock:
+            if self.timer:
+                self.timer.cancel()
+
+
 # ==========================================
 # 4. 辨識 + 網頁 + 門鎖
 # ==========================================
@@ -337,7 +656,10 @@ class DoorSystem:
         self.jpeg = None
         self.events = deque(maxlen=12)
         self.state = {'name': '無人臉', 'category': '', 'distance': None,
-                      'auto': True, 'message': '啟動中'}
+                      'auto': True, 'message': '啟動中',
+                      'require_gesture': REQUIRE_GESTURE, 'phase': 'face', 'countdown': None,
+                      'gesture': None, 'gesture_score': None,
+                      'allowed': [f'{GESTURE_EMOJI.get(g, "")}{g}' for g in ALLOWED_GESTURES]}
 
     def update(self, **values):
         with self.guard:
@@ -362,9 +684,15 @@ class DoorSystem:
         self.event(f'{reason} → {command} {"成功" if ok else "失敗：" + msg}')
         return ok, msg
 
-    def recognition_loop(self, camera, model, mapping):
+    def recognition_loop(self, camera, model, mapping, gesture=None):
+        """狀態機：
+        face    ：等待已登錄的人臉連續通過 REQUIRED_FRAMES 幀
+        gesture ：人臉通過後，GESTURE_WINDOW 秒內比出 ALLOWED_GESTURES 之一（連續 GESTURE_FRAMES 幀）→ 開鎖
+        REQUIRE_GESTURE=0 或沒有手勢偵測器時，人臉通過就直接開鎖（舊版行為）。"""
         candidate, streak, armed, absent_since, failures = None, 0, True, None, [0]
         last_label = None
+        phase, target, target_name, deadline, last_seen = 'face', None, '', 0.0, 0.0
+        g_streak, g_last, cooldown_until = 0, None, 0.0
         try:
             detector = load_detector()
             while not self.stop.is_set():
@@ -388,8 +716,6 @@ class DoorSystem:
                         accepted = label if valid else None
                 if len(faces) > 1:
                     name = '多人入鏡，暫不自動解鎖'
-                self.update(name=name, category=category,
-                            distance=None if best is None else round(float(best), 1))
                 if name != last_label and name not in ('無人臉',):
                     self.event(f'看到 {name} {category}'.strip())
                 last_label = name
@@ -409,10 +735,49 @@ class DoorSystem:
 
                 with self.guard:
                     auto = self.state['auto']
-                if auto and armed and streak >= REQUIRED_FRAMES:
-                    armed = False
-                    self.door('UNLOCK', f'辨識成功 {name}')
+                g_name, g_score = None, None
+                if not auto:
+                    phase = 'face'
+                elif phase == 'face':
+                    if armed and streak >= REQUIRED_FRAMES and now >= cooldown_until:
+                        if gesture is None:
+                            armed = False
+                            self.door('UNLOCK', f'辨識成功 {name}')
+                        else:
+                            phase, target, target_name = 'gesture', candidate, name
+                            deadline, last_seen, g_streak, g_last = now + GESTURE_WINDOW, now, 0, None
+                            self.event(f'人臉通過 {name} → 請比出手勢：' +
+                                       ' 或 '.join(GESTURE_EMOJI.get(g, g) for g in ALLOWED_GESTURES))
+                elif phase == 'gesture':
+                    if accepted == target:
+                        last_seen = now
+                    g_name, g_score, pts = gesture.detect(frame)
+                    ok_g = g_name in ALLOWED_GESTURES and g_score >= GESTURE_SCORE
+                    if pts:
+                        draw_hand(frame, pts, ok_g)
+                    g_streak = g_streak + 1 if ok_g and g_name == g_last else (1 if ok_g else 0)
+                    g_last = g_name if ok_g else None
+                    left = deadline - now
+                    hint = f'Show {" / ".join(ALLOWED_GESTURES)}  {max(0, left):.0f}s'
+                    cv2.putText(frame, hint, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 220, 255), 2)
+                    if g_name:
+                        cv2.putText(frame, f'{g_name} {g_score:.2f}', (10, 60), cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.8, (0, 220, 0) if ok_g else (0, 160, 255), 2)
+                    if g_streak >= GESTURE_FRAMES:
+                        armed, phase = False, 'face'
+                        self.door('UNLOCK', f'人臉 {target_name} + 手勢 {GESTURE_EMOJI.get(g_name, g_name)}')
+                    elif now - last_seen > FACE_GRACE:
+                        phase = 'face'
+                        self.event(f'{target_name} 離開鏡頭，取消手勢驗證')
+                    elif left <= 0:
+                        phase, cooldown_until = 'face', now + RETRY_COOLDOWN
+                        self.event(f'{target_name} 手勢逾時（{GESTURE_WINDOW:.0f} 秒），{RETRY_COOLDOWN:.0f} 秒後可重試')
 
+                self.update(name=name, category=category,
+                            distance=None if best is None else round(float(best), 1),
+                            phase=phase, gesture=g_name,
+                            gesture_score=None if g_score is None else round(float(g_score), 2),
+                            countdown=round(max(0.0, deadline - now), 1) if phase == 'gesture' else None)
                 ok, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 if ok:
                     with self.guard:
@@ -423,14 +788,15 @@ class DoorSystem:
 
 
 PAGE = '''<!doctype html><html lang="zh-Hant"><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>智慧門鎖</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>智慧門鎖（人臉＋手勢）</title>
 <style>body{font-family:sans-serif;background:#f2f1f6;color:#333;margin:0;padding:16px;text-align:center}
 img{width:100%;max-width:640px;border-radius:12px;background:#000}
 .card{max-width:640px;margin:12px auto;background:#fff;border-radius:12px;padding:12px;text-align:left}
 button{font-size:18px;padding:12px 18px;margin:6px;border:0;border-radius:10px;color:#fff;background:#6a5acd}
 button.lock{background:#c0392b}button.auto{background:#2e8b57}.ok{color:#2e8b57}.bad{color:#c0392b}
-ul{padding-left:18px;margin:4px 0;font-size:14px}</style>
-<h2>智慧門鎖</h2><img src="/video_feed">
+ul{padding-left:18px;margin:4px 0;font-size:14px}
+.hint{background:#fff4d6;border-radius:8px;padding:8px;margin-bottom:8px;font-size:18px}</style>
+<h2>智慧門鎖（人臉＋手勢）</h2><img src="/video_feed">
 <div><button onclick="act('unlock')">解鎖</button><button class="lock" onclick="act('lock')">上鎖並暫停自動</button>
 <button class="auto" onclick="act('auto')">恢復自動解鎖</button></div>
 <div class="card" id="s">載入中</div><div class="card"><b>事件</b><ul id="ev"></ul></div>
@@ -439,7 +805,9 @@ async function act(a){try{const r=await fetch('/api/action',{method:'POST',heade
 body:JSON.stringify({action:a})});const d=await r.json();alert0(d.message)}catch(e){alert0('伺服器連線失敗')}}
 function alert0(m){const s=document.getElementById('s');s.dataset.msg=m;setTimeout(()=>{delete s.dataset.msg},4000);poll()}
 async function poll(){try{const d=await(await fetch('/api/status')).json();const s=document.getElementById('s');
-s.innerHTML=`辨識：<b>${d.name}</b> ${d.category} ${d.distance??''}<br>Arduino：<span class="${d.connected?'ok':'bad'}">${d.arduino}</span>
+const g=d.phase==='gesture'?`<div class="hint">✋ 請比出手勢：${d.allowed.join(' 或 ')}（剩 ${d.countdown} 秒）<br>目前偵測：${d.gesture??'—'} ${d.gesture_score??''}</div>`:'';
+s.innerHTML=`${g}辨識：<b>${d.name}</b> ${d.category} ${d.distance??''}<br>開鎖條件：${d.require_gesture?'人臉 + 手勢（'+d.allowed.join(' / ')+'）':'只需人臉'}
+<br>Arduino：<span class="${d.connected?'ok':'bad'}">${d.arduino}</span>
 <br>自動解鎖：${d.auto?'開':'關'}<br>${s.dataset.msg||d.message}`;
 document.getElementById('ev').innerHTML=d.events.map(e=>`<li>${e}</li>`).join('')}catch(e){}}
 setInterval(poll,1000);poll();
@@ -489,19 +857,21 @@ def create_web(system):
     return app
 
 
-def run():
+def run(simulate=False):
     if not MODEL_FILE.exists() or not MAP_FILE.exists():
         raise RuntimeError('缺少 face.yml 或 id_map.txt，請先 capture 再 train')
     model = new_recognizer()
     model.read(str(MODEL_FILE))
     mapping = read_map()
     log(f'已載入 {len(mapping)} 位使用者：' + '、'.join(f'{n}({c})' for n, c in mapping.values()))
+    gesture = GestureDetector() if REQUIRE_GESTURE else None
+    log('開鎖條件：' + ('人臉 + 手勢 ' + ' / '.join(ALLOWED_GESTURES) if gesture else '只需人臉'))
     camera = Camera()
-    arduino = Arduino()
+    arduino = FakeArduino() if simulate else Arduino()
     system = DoorSystem(arduino)
     arduino.connect()                                 # 失敗也繼續，watchdog 會重試
     system.update(message='系統已啟動')
-    threads = [threading.Thread(target=system.recognition_loop, args=(camera, model, mapping), daemon=True),
+    threads = [threading.Thread(target=system.recognition_loop, args=(camera, model, mapping, gesture), daemon=True),
                threading.Thread(target=arduino.watchdog, args=(system.stop,), daemon=True)]
     for t in threads:
         t.start()
@@ -514,6 +884,8 @@ def run():
         arduino.send('LOCK')
         arduino.close()
         camera.close()
+        if gesture is not None:
+            gesture.close()
         log('已上鎖並結束')
 
 
@@ -522,10 +894,80 @@ def test_arduino():
     if not arduino.connect():
         raise RuntimeError(arduino.status)
     print(arduino.send('UNLOCK'))
-    print('等待 Arduino 5 秒後自動上鎖...')
-    time.sleep(6)
+    print(f'等待 Arduino {UNLOCK_SECONDS} 秒後自動上鎖（應聽到第二聲喀）...')
+    time.sleep(UNLOCK_SECONDS + 1)
     print(arduino.send('LOCK'))
     arduino.close()
+
+
+def test_camera(seconds=10):
+    """不需要 Arduino 和網頁：測相機 FPS、人臉偵測，若已訓練也顯示辨識結果，最後存一張 camera_test.jpg。"""
+    detector = load_detector()
+    model, mapping = None, {}
+    if MODEL_FILE.exists() and MAP_FILE.exists():
+        model = new_recognizer()
+        model.read(str(MODEL_FILE))
+        mapping = read_map()
+    camera = Camera()
+    frames, failures, last_print, start, frame = 0, [0], 0.0, time.monotonic(), None
+    log(f'相機測試 {seconds} 秒，請站到鏡頭前' + ('' if model else '（尚未訓練，只測人臉偵測）'))
+    try:
+        while time.monotonic() - start < seconds:
+            frame = read_frame(camera, failures)
+            if frame is None:
+                continue
+            frames += 1
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = detector.detectMultiScale(gray, 1.2, 5, minSize=MIN_FACE)
+            results = []
+            for x, y, w, h in faces:
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                if model is not None:
+                    label, dist = model.predict(normalize(gray[y:y + h, x:x + w]))
+                    name = mapping.get(label, ('?', ''))[0]
+                    results.append(f'{name if dist < THRESHOLD else "Unknown"}(距離 {dist:.0f})')
+            now = time.monotonic()
+            if now - last_print >= 1:
+                last_print = now
+                fps = frames / (now - start)
+                print(f'  {fps:4.1f} fps | 偵測到 {len(faces)} 張臉 ' + ' '.join(results), flush=True)
+    finally:
+        camera.close()
+    if frame is None:
+        raise RuntimeError('一張畫面都沒讀到')
+    out = BASE / 'camera_test.jpg'
+    cv2.imwrite(str(out), frame)
+    log(f'相機正常，{frame.shape[1]}x{frame.shape[0]}，最後一張存到 {out}')
+
+
+def test_gesture(seconds=20):
+    """不需要人臉、Arduino：即時列出偵測到的手勢與信心值，最後存一張 gesture_test.jpg。"""
+    gesture = GestureDetector()
+    camera = Camera()
+    failures, start, last_print, frame, frames = [0], time.monotonic(), 0.0, None, 0
+    log(f'手勢測試 {seconds} 秒：對鏡頭比出手勢（合格手勢：{" / ".join(ALLOWED_GESTURES)}）')
+    try:
+        while time.monotonic() - start < seconds:
+            frame = read_frame(camera, failures)
+            if frame is None:
+                continue
+            frames += 1
+            name, score, pts = gesture.detect(frame)
+            ok = name in ALLOWED_GESTURES and score >= GESTURE_SCORE
+            if pts:
+                draw_hand(frame, pts, ok)
+            now = time.monotonic()
+            if now - last_print >= 0.5:
+                last_print = now
+                fps = frames / (now - start)
+                shown = f'{GESTURE_EMOJI.get(name, "")} {name} ({score:.2f})' if name else ('有手，無法判斷' if pts else '沒偵測到手')
+                print(f'  {fps:4.1f} fps | {shown}' + ('  ← 合格' if ok else ''), flush=True)
+    finally:
+        camera.close()
+        gesture.close()
+    if frame is not None:
+        cv2.imwrite(str(BASE / 'gesture_test.jpg'), frame)
+        log(f'最後一張存到 {BASE / "gesture_test.jpg"}')
 
 
 # ==========================================
@@ -533,7 +975,8 @@ def test_arduino():
 # ==========================================
 def menu():
     while True:
-        print('\n1. 採集人臉\n2. 訓練模型\n3. 啟動門鎖系統\n4. 測試 Arduino\n5. 離開')
+        print('\n1. 採集人臉\n2. 訓練模型\n3. 啟動門鎖系統\n4. 測試 Arduino\n5. 離開'
+              '\n6. 測試相機\n7. 啟動門鎖系統（模擬 Arduino）\n8. 測試手勢')
         choice = input('選擇：').strip()
         try:
             if choice == '1':
@@ -547,17 +990,27 @@ def menu():
                 test_arduino()
             elif choice == '5':
                 return
+            elif choice == '6':
+                test_camera()
+            elif choice == '7':
+                run(simulate=True)
+                return
+            elif choice == '8':
+                test_gesture()
         except (RuntimeError, ValueError, OSError, cv2.error) as exc:
             print('錯誤：', exc)
 
 
 def main(argv):
-    commands = {'train': train, 'run': run, 'test-arduino': test_arduino}
+    commands = {'train': train, 'run': run, 'test-arduino': test_arduino, 'test-camera': test_camera,
+                'test-gesture': test_gesture}
     try:
         if not argv:
             menu()
         elif argv[0] == 'capture' and len(argv) == 2:
             capture(argv[1])
+        elif argv == ['run', '--sim'] or (argv == ['run'] and os.environ.get('SIM_ARDUINO') == '1'):
+            run(simulate=True)
         elif argv[0] in commands and len(argv) == 1:
             commands[argv[0]]()
         else:

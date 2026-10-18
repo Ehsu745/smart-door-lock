@@ -29,19 +29,19 @@ for p in ports:
 
 print('\n== 5. 逐一 baud 測試 ==')
 for p in ports:
-    for baud in (9600, 115200, 57600, 19200, 38400):
+    for baud in (9600, 115200, 57600, 19200, 38400):   # 看哪個 baud 的回覆是可讀文字而非亂碼
         try:
             s = serial.Serial(p, baud, timeout=0.3)
         except serial.SerialException as e:
             print(p, '開啟失敗：', e); break
         time.sleep(2.5)                      # 等 auto-reset 完成
         boot = s.read(200)
-        s.write(b'LOCK\n'); s.flush()
+        s.write(b'lock\n'); s.flush()
         time.sleep(0.5)
         reply = s.read(200)
         s.close()
-        print(f'{p} @ {baud:>6}: 開機訊息={boot!r}  LOCK 回覆={reply!r}')
-        if b'LOCKED' in reply or b'READY' in boot:
+        print(f'{p} @ {baud:>6}: 開機訊息={boot!r}  lock 回覆={reply!r}')
+        if b'lock' in reply.lower() or b'READY' in boot:
             print(f'\n>>> 正確設定：PORT={p!r}, BAUD={baud}（並確認這就是新版 door_lock.ino）')
             sys.exit()
 print('\n全部 baud 都沒有正確回覆：Arduino 上大概不是新版 door_lock.ino，請用 IDE 重新上傳')

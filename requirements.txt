@@ -1,0 +1,6 @@
+# Python 3.9 – 3.12（MediaPipe 0.10.18 沒有 Python 3.13 的 Linux ARM 版本）
+# 不要另外安裝 opencv-python：mediapipe 會自動裝 opencv-contrib-python（含 cv2.face）
+mediapipe==0.10.18
+flask
+pyserial
+certifi        # 下載手勢模型用（macOS 的 Python 常缺根憑證）
