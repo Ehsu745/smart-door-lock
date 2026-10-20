@@ -1,6 +1,7 @@
 """樹莓派人臉 + 手勢雙重驗證門鎖：Pi 5 + Pi 相機 + MediaPipe 手勢 + USB 連接 Arduino 控制繼電器。
 
-開鎖流程：認出已登錄的人臉 → 畫面提示比手勢 → 在時限內比出指定手勢（預設 👍 或 ✌️）→ 開鎖。
+身分：master 可自動開鎖；guest 只會通知「偵測到訪客，建議開鎖」，由人在網頁上決定要不要開。
+開鎖流程（master）：認出已登錄的人臉 → 畫面提示比手勢 → 在時限內比出指定手勢（預設 讚 或 YA）→ 開鎖。
 執行環境：Python 3.9–3.12（MediaPipe 尚無 Python 3.13 的 ARM 版），詳見 SETUP.md。
 
 用法（在 app.py 所在資料夾）：
@@ -12,14 +13,17 @@
   python3 app.py test-camera     只測相機：FPS、人臉偵測、辨識距離，存 camera_test.jpg
   python3 app.py test-arduino    只測試 Arduino：上鎖 → 解鎖 → 等待 8 秒自動上鎖
   python3 app.py test-gesture    只測手勢：即時顯示偵測到的手勢與信心值，存 gesture_test.jpg
+  python3 app.py qr              在終端機印出控制頁網址的 QR code
 
 資料沿用舊版格式：faces/<ID>_*.jpg、face.yml、id_map.txt（編號:名字:master|guest）。
 """
 import glob
+import hmac
 import math
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -73,13 +77,23 @@ ALLOWED_GESTURES = [g.strip() for g in os.environ.get('ALLOWED_GESTURES', 'Thumb
 GESTURE_SCORE = float(os.environ.get('GESTURE_SCORE', 0.6))      # 手勢信心值門檻（0–1）
 GESTURE_FRAMES = int(os.environ.get('GESTURE_FRAMES', 5))        # 連續幾幀都是同一個合格手勢才算數
 GESTURE_WINDOW = float(os.environ.get('GESTURE_WINDOW', 8))      # 人臉通過後，幾秒內要比出手勢
+VISITOR_HOLD = 10.0            # 訪客離開鏡頭後，網頁提示保留幾秒
 FACE_GRACE = 3.0                # 比手勢時手可能擋到臉；人臉消失超過這麼久才取消
 RETRY_COOLDOWN = 3.0            # 手勢逾時後，隔幾秒才重新開始
 GESTURE_MODEL = BASE / 'models' / 'gesture_recognizer.task'
 GESTURE_MODEL_URL = ('https://storage.googleapis.com/mediapipe-models/gesture_recognizer/'
                      'gesture_recognizer/float16/latest/gesture_recognizer.task')
-GESTURE_EMOJI = {'Thumb_Up': '👍', 'Thumb_Down': '👎', 'Victory': '✌️', 'Open_Palm': '✋',
-                 'Closed_Fist': '✊', 'Pointing_Up': '☝️', 'ILoveYou': '🤟'}
+# ---- 門口顯示視窗 / QR code / PIN ----
+ENABLE_QR = True        # False = 不顯示 QR code（也不需要安裝 qrcode 套件）；預覽視窗照樣有
+SHOW_WINDOW = os.environ.get('SHOW_WINDOW', 'auto')   # auto = 有螢幕就開；1 = 強制開；0 = 不開
+KIOSK = os.environ.get('KIOSK', '0') == '1'           # 1 = 視窗全螢幕
+CONTROL_PIN = os.environ.get('CONTROL_PIN', '')       # 設定後，網頁按開鎖/上鎖都要輸入這組 PIN
+PUBLIC_URL = os.environ.get('PUBLIC_URL', '')         # QR code 要導向的網址；不設定就自動用 http://<區網 IP>:<埠>
+
+# 純文字標籤（Pi 的終端機 / 瀏覽器預設沒有 emoji 字型）
+GESTURE_LABEL = {'Thumb_Up': '讚(Thumb_Up)', 'Thumb_Down': '倒讚(Thumb_Down)', 'Victory': 'YA(Victory)',
+                 'Open_Palm': '張開手(Open_Palm)', 'Closed_Fist': '握拳(Closed_Fist)',
+                 'Pointing_Up': '食指朝上(Pointing_Up)', 'ILoveYou': 'ILoveYou'}
 
 
 def log(msg):
@@ -130,6 +144,64 @@ def has_display():
     if sys.platform == 'darwin':          # macOS 沒有 DISPLAY 變數，但一定有桌面
         return True
     return bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))
+
+
+def lan_ip():
+    """取得本機在區網的 IP（不會真的送出封包）。"""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(('8.8.8.8', 80))
+            return s.getsockname()[0]
+    except OSError:
+        try:
+            return subprocess.run(['hostname', '-I'], capture_output=True, text=True).stdout.split()[0]
+        except (OSError, IndexError):
+            return '127.0.0.1'
+
+
+def control_url():
+    return PUBLIC_URL or f'http://{lan_ip()}:{WEB_PORT}'
+
+
+def qr_matrix(text):
+    """回傳 QR code 的布林矩陣（含白邊）；沒有安裝 qrcode 套件時回傳 None。"""
+    try:
+        import qrcode
+    except ImportError:
+        return None
+    qr = qrcode.QRCode(border=2, error_correction=qrcode.constants.ERROR_CORRECT_M)
+    qr.add_data(text)
+    qr.make(fit=True)
+    return qr.get_matrix()
+
+
+def print_qr(text):
+    """在終端機用 Unicode 半格字元印出 QR code（SSH 也能顯示）。"""
+    m = qr_matrix(text)
+    if m is None:
+        if shutil.which('qrencode'):
+            subprocess.run(['qrencode', '-t', 'ansiutf8', text])
+        else:
+            print('（沒有 qrcode 套件，無法印出 QR code：pip install qrcode）')
+        print(text)
+        return
+    if len(m) % 2:
+        m = m + [[False] * len(m[0])]
+    # 以「亮底暗格」輸出：深色終端機背景下手機也能掃
+    chars = {(False, False): '█', (True, True): ' ', (True, False): '▄', (False, True): '▀'}
+    lines = [''.join(chars[(top, bottom)] for top, bottom in zip(m[r], m[r + 1])) for r in range(0, len(m), 2)]
+    print('\n'.join(lines))
+    print(text, flush=True)
+
+
+def qr_image(text, size):
+    """回傳 size×size 的 BGR QR code 圖片；沒有 qrcode 套件時回傳 None。"""
+    m = qr_matrix(text)
+    if m is None:
+        return None
+    img = np.where(np.array(m, dtype=bool), 0, 255).astype(np.uint8)
+    img = cv2.resize(img, (size, size), interpolation=cv2.INTER_NEAREST)
+    return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
 
 
 # ==========================================
@@ -412,6 +484,20 @@ def draw_hand(frame, pts, ok):
         cv2.circle(frame, p, 3, (255, 255, 255), -1)
 
 
+def draw_bar(img, x, y, w, h, frac, color):
+    cv2.rectangle(img, (x, y), (x + w, y + h), (60, 60, 60), -1)
+    cv2.rectangle(img, (x, y), (x + int(w * max(0.0, min(1.0, frac))), y + h), color, -1)
+    cv2.rectangle(img, (x, y), (x + w, y + h), (230, 230, 230), 1)
+
+
+def draw_label(img, text, org, scale=0.7, color=(255, 255, 255), bg=(0, 0, 0)):
+    """有底色的文字，在亮背景上也看得清楚（OpenCV 只能畫英文）。"""
+    (tw, th), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 2)
+    x, y = org
+    cv2.rectangle(img, (x - 4, y - th - 6), (x + tw + 4, y + base + 2), bg, -1)
+    cv2.putText(img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 2)
+
+
 # ==========================================
 # 1. 採集
 # ==========================================
@@ -423,7 +509,7 @@ def capture(user_id, count=CAPTURE_COUNT):
     stamp = time.strftime('%Y%m%d%H%M%S')        # 每次採集不同檔名，不會蓋掉舊照片
     show = has_display()
     camera = Camera()
-    saved, last_save, failures = 0, 0.0, [0]
+    saved, last_save, failures, just_saved_until = 0, 0.0, [0], 0.0
     log(f'開始採集 {user_id}：請正對鏡頭並稍微轉動角度' + ('（按 q 結束）' if show else ''))
     try:
         while saved < count:
@@ -437,10 +523,22 @@ def capture(user_id, count=CAPTURE_COUNT):
                 if cv2.imwrite(str(FACE_DIR / f'{user_id}_{stamp}-{saved}.jpg'), gray[y:y + h, x:x + w]):
                     saved += 1
                     last_save = time.monotonic()
+                    just_saved_until = last_save + 0.12
                     print(f'\r已採集 {saved}/{count}', end='', flush=True)
             if show:
+                one = len(faces) == 1
                 for x, y, w, h in faces:
-                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0) if len(faces) == 1 else (0, 0, 255), 2)
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0) if one else (0, 0, 255), 2)
+                if just_saved_until > time.monotonic() and one:          # 剛拍到時框線閃白
+                    x, y, w, h = faces[0]
+                    cv2.rectangle(frame, (x - 4, y - 4), (x + w + 4, y + h + 4), (255, 255, 255), 2)
+                hint = ('Turn your head slowly' if one else
+                        'No face - look at the camera' if len(faces) == 0 else 'Only ONE face please')
+                draw_label(frame, f'Capturing: {user_id}', (12, 30), 0.75)
+                draw_label(frame, hint, (12, 62), 0.6, (255, 255, 255), (0, 120, 0) if one else (0, 0, 160))
+                fh, fw = frame.shape[:2]
+                draw_bar(frame, 12, fh - 40, fw - 24, 22, saved / count, (0, 200, 0))
+                draw_label(frame, f'{saved}/{count}', (fw // 2 - 30, fh - 50), 0.7)
                 cv2.imshow('Capture (q = quit)', frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
@@ -449,6 +547,8 @@ def capture(user_id, count=CAPTURE_COUNT):
         if show:
             cv2.destroyAllWindows()
     print()
+    if show and saved >= count:                       # 最後一張停留一下，讓人看到 30/30
+        time.sleep(0.3)
     log(f'採集完成：{saved} 張。接著執行 train 重新訓練')
 
 
@@ -620,7 +720,7 @@ class FakeArduino:
         return True
 
     def _auto_lock(self):
-        log(f'[模擬 Arduino] {self.UNLOCK_SECONDS} 秒到 → 自動上鎖 🔒')
+        log(f'[模擬 Arduino] {self.UNLOCK_SECONDS} 秒到 → 自動上鎖 [LOCKED]')
 
     def send(self, command):
         with self.lock:
@@ -628,12 +728,12 @@ class FakeArduino:
                 self.timer.cancel()
                 self.timer = None
             if command == 'UNLOCK':
-                log(f'[模擬 Arduino] 繼電器 ON → 開鎖 🔓（{self.UNLOCK_SECONDS} 秒後自動上鎖）')
+                log(f'[模擬 Arduino] 繼電器 ON → 開鎖 [UNLOCKED]（{self.UNLOCK_SECONDS} 秒後自動上鎖）')
                 self.timer = threading.Timer(self.UNLOCK_SECONDS, self._auto_lock)
                 self.timer.daemon = True
                 self.timer.start()
                 return True, '[模擬] Arduino 開鎖'
-            log('[模擬 Arduino] 繼電器 OFF → 上鎖 🔒')
+            log('[模擬 Arduino] 繼電器 OFF → 上鎖 [LOCKED]')
             return True, '[模擬] Arduino 上鎖'
 
     def watchdog(self, stop):
@@ -654,12 +754,14 @@ class DoorSystem:
         self.guard = threading.Lock()
         self.stop = threading.Event()
         self.jpeg = None
+        self.frame = None                    # 最新一幀（已畫框），給門口顯示視窗用
+        self.unlocked_until = 0.0            # 推估的開鎖結束時間（Arduino 自動上鎖秒數）
         self.events = deque(maxlen=12)
         self.state = {'name': '無人臉', 'category': '', 'distance': None,
                       'auto': True, 'message': '啟動中',
                       'require_gesture': REQUIRE_GESTURE, 'phase': 'face', 'countdown': None,
-                      'gesture': None, 'gesture_score': None,
-                      'allowed': [f'{GESTURE_EMOJI.get(g, "")}{g}' for g in ALLOWED_GESTURES]}
+                      'gesture': None, 'gesture_score': None, 'visitor': None, 'visitor_since': None,
+                      'allowed': [GESTURE_LABEL.get(g, g) for g in ALLOWED_GESTURES]}
 
     def update(self, **values):
         with self.guard:
@@ -676,10 +778,16 @@ class DoorSystem:
             data['events'] = list(self.events)
         data['arduino'] = self.arduino.status
         data['connected'] = self.arduino.connected
+        data['pin_required'] = bool(CONTROL_PIN)
+        data['unlocked'] = time.monotonic() < self.unlocked_until
         return data
 
     def door(self, command, reason):
         ok, msg = self.arduino.send(command)
+        if ok:
+            self.unlocked_until = time.monotonic() + UNLOCK_SECONDS if command == 'UNLOCK' else 0.0
+            if command == 'UNLOCK':
+                self.update(visitor=None, visitor_since=None)
         self.update(message=msg)
         self.event(f'{reason} → {command} {"成功" if ok else "失敗：" + msg}')
         return ok, msg
@@ -693,6 +801,7 @@ class DoorSystem:
         last_label = None
         phase, target, target_name, deadline, last_seen = 'face', None, '', 0.0, 0.0
         g_streak, g_last, cooldown_until = 0, None, 0.0
+        v_label, v_streak, v_seen, v_notified = None, 0, 0.0, set()     # 訪客（guest）偵測
         try:
             detector = load_detector()
             while not self.stop.is_set():
@@ -703,22 +812,42 @@ class DoorSystem:
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 faces = detector.detectMultiScale(gray, 1.2, 5, minSize=MIN_FACE)
                 accepted, name, category, best = None, '無人臉', '', None
+                guest_label = None
                 for x, y, w, h in faces:
                     label, distance = model.predict(normalize(gray[y:y + h, x:x + w]))
                     person, kind = mapping.get(label, ('Unknown', 'Stranger'))
-                    valid = distance < THRESHOLD and kind in ('master', 'guest')
-                    color = (0, 255, 0) if valid else (0, 0, 255)
+                    known = distance < THRESHOLD and kind in ('master', 'guest')
+                    color = ((0, 255, 0) if kind == 'master' else (200, 0, 200)) if known else (0, 0, 255)
                     cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-                    cv2.putText(frame, f'{person if valid else "Unknown"} {distance:.0f}',
+                    tag = (person if kind == 'master' else f'{person} (guest)') if known else 'Unknown'
+                    cv2.putText(frame, f'{tag} {distance:.0f}',
                                 (x, max(20, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
                     if len(faces) == 1:
-                        name, category, best = (person, kind, distance) if valid else ('Unknown', 'Stranger', distance)
-                        accepted = label if valid else None
+                        name, category, best = (person, kind, distance) if known else ('Unknown', 'Stranger', distance)
+                        accepted = label if known and kind == 'master' else None      # 只有 master 能自動開鎖
+                        guest_label = label if known and kind == 'guest' else None
                 if len(faces) > 1:
                     name = '多人入鏡，暫不自動解鎖'
                 if name != last_label and name not in ('無人臉',):
                     self.event(f'看到 {name} {category}'.strip())
                 last_label = name
+
+                # 訪客：連續認出 REQUIRED_FRAMES 幀就通知一次；離開 REARM_SECONDS 秒後可再通知
+                if guest_label is not None:
+                    v_streak = v_streak + 1 if guest_label == v_label else 1
+                    v_label, v_seen = guest_label, now
+                    if v_streak >= REQUIRED_FRAMES and guest_label not in v_notified:
+                        v_notified.add(guest_label)
+                        self.update(visitor=name, visitor_since=time.strftime('%H:%M:%S'))
+                        self.event(f'偵測到訪客：{name}，建議開鎖（請在網頁按「解鎖」）')
+                else:
+                    v_streak = 0
+                    if v_notified and now - v_seen >= REARM_SECONDS:
+                        v_notified.clear()
+                with self.guard:
+                    visitor = self.state['visitor']
+                if visitor and now - v_seen >= VISITOR_HOLD:
+                    self.update(visitor=None, visitor_since=None)
 
                 # 離開鏡頭 REARM_SECONDS 秒後才重新允許自動解鎖
                 if len(faces) == 0:
@@ -747,7 +876,7 @@ class DoorSystem:
                             phase, target, target_name = 'gesture', candidate, name
                             deadline, last_seen, g_streak, g_last = now + GESTURE_WINDOW, now, 0, None
                             self.event(f'人臉通過 {name} → 請比出手勢：' +
-                                       ' 或 '.join(GESTURE_EMOJI.get(g, g) for g in ALLOWED_GESTURES))
+                                       ' 或 '.join(GESTURE_LABEL.get(g, g) for g in ALLOWED_GESTURES))
                 elif phase == 'gesture':
                     if accepted == target:
                         last_seen = now
@@ -765,7 +894,7 @@ class DoorSystem:
                                     0.8, (0, 220, 0) if ok_g else (0, 160, 255), 2)
                     if g_streak >= GESTURE_FRAMES:
                         armed, phase = False, 'face'
-                        self.door('UNLOCK', f'人臉 {target_name} + 手勢 {GESTURE_EMOJI.get(g_name, g_name)}')
+                        self.door('UNLOCK', f'人臉 {target_name} + 手勢 {GESTURE_LABEL.get(g_name, g_name)}')
                     elif now - last_seen > FACE_GRACE:
                         phase = 'face'
                         self.event(f'{target_name} 離開鏡頭，取消手勢驗證')
@@ -782,6 +911,7 @@ class DoorSystem:
                 if ok:
                     with self.guard:
                         self.jpeg = buf.tobytes()
+                        self.frame = frame
         except Exception as exc:
             self.update(message=f'辨識停止：{exc}')
             log(f'辨識錯誤：{exc}')
@@ -795,20 +925,30 @@ img{width:100%;max-width:640px;border-radius:12px;background:#000}
 button{font-size:18px;padding:12px 18px;margin:6px;border:0;border-radius:10px;color:#fff;background:#6a5acd}
 button.lock{background:#c0392b}button.auto{background:#2e8b57}.ok{color:#2e8b57}.bad{color:#c0392b}
 ul{padding-left:18px;margin:4px 0;font-size:14px}
-.hint{background:#fff4d6;border-radius:8px;padding:8px;margin-bottom:8px;font-size:18px}</style>
+.hint{background:#fff4d6;border-radius:8px;padding:8px;margin-bottom:8px;font-size:18px}
+.visitor{background:#f3e5ff;border:2px solid #8e44ad;border-radius:8px;padding:10px;margin-bottom:8px;font-size:18px}
+.visitor button{font-size:16px;padding:8px 14px;margin:6px 0 0}</style>
 <h2>智慧門鎖（人臉＋手勢）</h2><img src="/video_feed">
+<div id="pinbox" style="display:none;margin:8px">PIN：<input id="pin" type="password" inputmode="numeric" autocomplete="off"
+style="font-size:18px;width:8em;padding:6px;border-radius:8px;border:1px solid #bbb"></div>
 <div><button onclick="act('unlock')">解鎖</button><button class="lock" onclick="act('lock')">上鎖並暫停自動</button>
 <button class="auto" onclick="act('auto')">恢復自動解鎖</button></div>
 <div class="card" id="s">載入中</div><div class="card"><b>事件</b><ul id="ev"></ul></div>
 <script>
-async function act(a){try{const r=await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},
-body:JSON.stringify({action:a})});const d=await r.json();alert0(d.message)}catch(e){alert0('伺服器連線失敗')}}
+const pinEl=()=>document.getElementById('pin');
+try{const v=localStorage.getItem('door_pin');if(v)pinEl().value=v}catch(e){}
+async function act(a){const pin=pinEl().value;try{localStorage.setItem('door_pin',pin)}catch(e){}
+try{const r=await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({action:a,pin})});const d=await r.json();alert0(d.message)}catch(e){alert0('伺服器連線失敗')}}
 function alert0(m){const s=document.getElementById('s');s.dataset.msg=m;setTimeout(()=>{delete s.dataset.msg},4000);poll()}
 async function poll(){try{const d=await(await fetch('/api/status')).json();const s=document.getElementById('s');
-const g=d.phase==='gesture'?`<div class="hint">✋ 請比出手勢：${d.allowed.join(' 或 ')}（剩 ${d.countdown} 秒）<br>目前偵測：${d.gesture??'—'} ${d.gesture_score??''}</div>`:'';
-s.innerHTML=`${g}辨識：<b>${d.name}</b> ${d.category} ${d.distance??''}<br>開鎖條件：${d.require_gesture?'人臉 + 手勢（'+d.allowed.join(' / ')+'）':'只需人臉'}
+document.getElementById('pinbox').style.display=d.pin_required?'block':'none';
+const v=d.visitor?`<div class="visitor"><b>訪客在門口：${d.visitor}</b>（${d.visitor_since}）<br>建議開鎖
+<br><button onclick="act('unlock')">開門讓訪客進來</button></div>`:'';
+const g=d.phase==='gesture'?`<div class="hint">請比出手勢：${d.allowed.join(' 或 ')}（剩 ${d.countdown} 秒）<br>目前偵測：${d.gesture??'—'} ${d.gesture_score??''}</div>`:'';
+s.innerHTML=`${v}${g}辨識：<b>${d.name}</b> ${d.category} ${d.distance??''}<br>開鎖條件：${d.require_gesture?'人臉 + 手勢（'+d.allowed.join(' / ')+'）':'只需人臉'}
 <br>Arduino：<span class="${d.connected?'ok':'bad'}">${d.arduino}</span>
-<br>自動解鎖：${d.auto?'開':'關'}<br>${s.dataset.msg||d.message}`;
+<br>門鎖：${d.unlocked?'<span class="ok">[開鎖中]</span>':'[上鎖]'}　自動解鎖：${d.auto?'開':'關'}<br>${s.dataset.msg||d.message}`;
 document.getElementById('ev').innerHTML=d.events.map(e=>`<li>${e}</li>`).join('')}catch(e){}}
 setInterval(poll,1000);poll();
 </script></html>'''
@@ -830,6 +970,9 @@ def create_web(system):
     def action():
         data = request.get_json(silent=True) or {}
         act = data.get('action')
+        if CONTROL_PIN and not hmac.compare_digest(str(data.get('pin', '')), CONTROL_PIN):
+            system.event(f'網頁 {act} 被拒：PIN 錯誤（{request.remote_addr}）')
+            return jsonify(success=False, message='PIN 錯誤'), 403
         if act == 'auto':
             system.update(auto=True, message='已恢復自動解鎖')
             system.event('手動：恢復自動解鎖')
@@ -857,6 +1000,87 @@ def create_web(system):
     return app
 
 
+WINDOW_NAME = 'Smart Door Lock'
+PANEL_W = 300
+
+
+def compose_display(system, url, qr):
+    """門口顯示畫面：左邊是相機畫面（含辨識框），右邊是 QR code 與門鎖狀態。"""
+    with system.guard:
+        frame = None if system.frame is None else system.frame.copy()
+        st = dict(system.state)
+    if frame is None:
+        frame = np.zeros((FRAME_SIZE[1], FRAME_SIZE[0], 3), np.uint8)
+        cv2.putText(frame, 'Starting camera...', (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (200, 200, 200), 2)
+    remain = system.unlocked_until - time.monotonic()
+    if remain > 0:
+        color, text, sub = (60, 160, 60), 'UNLOCKED', f'auto-lock in {remain:.0f}s'
+    elif st.get('visitor'):
+        color, text, sub = (160, 40, 160), 'GUEST AT DOOR', f'{st["visitor"]} - unlock via web'
+    elif st.get('phase') == 'gesture':
+        color, text, sub = (0, 150, 230), 'SHOW GESTURE', f'{" / ".join(ALLOWED_GESTURES)}  {st.get("countdown") or 0:.0f}s'
+    else:
+        color, text, sub = (50, 50, 190), 'LOCKED', ('auto unlock: on' if st.get('auto') else 'auto unlock: OFF')
+    if not ENABLE_QR:                                  # 沒有 QR：只在畫面底部加狀態列
+        fh, fw = frame.shape[:2]
+        bar = np.zeros((56, fw, 3), np.uint8)
+        bar[:] = color
+        cv2.putText(bar, text, (14, 38), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+        cv2.putText(bar, sub, (fw - 20 - cv2.getTextSize(sub, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)[0][0], 36),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        return np.vstack([frame, bar])
+    h = frame.shape[0]
+    panel = np.full((h, PANEL_W, 3), 255, np.uint8)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    y = 16
+    if qr is not None:
+        q = min(PANEL_W - 30, h - 190)
+        panel[y:y + q, (PANEL_W - q) // 2:(PANEL_W - q) // 2 + q] = cv2.resize(qr, (q, q), interpolation=cv2.INTER_NEAREST)
+        y += q + 26
+        cv2.putText(panel, 'Scan for control page', (14, y), font, 0.62, (60, 60, 60), 2)
+        y += 22
+    short = url.replace('http://', '')
+    cv2.putText(panel, short, (14, y), font, 0.5 if len(short) < 26 else 0.42, (90, 90, 90), 1)
+    y += 18
+    if CONTROL_PIN:
+        cv2.putText(panel, '(PIN required)', (14, y), font, 0.45, (120, 120, 120), 1)
+    cv2.rectangle(panel, (10, h - 82), (PANEL_W - 10, h - 12), color, -1)
+    cv2.putText(panel, text, (22, h - 46), font, 0.95, (255, 255, 255), 2)
+    cv2.putText(panel, sub, (22, h - 22), font, 0.5, (255, 255, 255), 1)
+    return np.hstack([frame, panel])
+
+
+def display_loop(system, url):
+    """在主執行緒顯示門口視窗（macOS 規定 GUI 要在主執行緒）。按 q 或 Esc 結束整個系統。"""
+    qr = qr_image(url, 512) if ENABLE_QR else None
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)   # 不顯示 OpenCV 工具列
+    if KIOSK:
+        cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    else:
+        cv2.resizeWindow(WINDOW_NAME, FRAME_SIZE[0] + (PANEL_W if ENABLE_QR else 0),
+                         FRAME_SIZE[1] + (0 if ENABLE_QR else 56))
+    while not system.stop.is_set():
+        cv2.imshow(WINDOW_NAME, compose_display(system, url, qr))
+        if cv2.waitKey(40) & 0xFF in (ord('q'), 27):
+            break
+    cv2.destroyAllWindows()
+
+
+def want_window():
+    if SHOW_WINDOW == '1':
+        return True
+    if SHOW_WINDOW == '0':
+        return False
+    return has_display()
+
+
+def show_qr():
+    url = control_url()
+    print_qr(url)
+    if not CONTROL_PIN:
+        print('[注意] 沒有設定 CONTROL_PIN：任何掃到這個 QR code 的人都能開門。建議 CONTROL_PIN=1234 python app.py run')
+
+
 def run(simulate=False):
     if not MODEL_FILE.exists() or not MAP_FILE.exists():
         raise RuntimeError('缺少 face.yml 或 id_map.txt，請先 capture 再 train')
@@ -875,9 +1099,32 @@ def run(simulate=False):
                threading.Thread(target=arduino.watchdog, args=(system.stop,), daemon=True)]
     for t in threads:
         t.start()
-    log(f'網頁控制台：http://localhost:{WEB_PORT}（同網路其他裝置用 http://<Pi 的 IP>:{WEB_PORT}）；Ctrl+C 結束')
+    url = control_url()
+    with socket.socket() as probe:                  # Flask 在背景執行緒，埠被占用時要先擋下來
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(('0.0.0.0', WEB_PORT))
+        except OSError:
+            system.stop.set()
+            camera.close()
+            raise RuntimeError(f'埠 {WEB_PORT} 已被使用：先關掉其他正在跑的 app.py（pkill -f "app.py run"）')
+    web = create_web(system)
+    threading.Thread(target=lambda: web.run(host='0.0.0.0', port=WEB_PORT, threaded=True, use_reloader=False),
+                     daemon=True).start()
+    log(f'網頁控制台：{url}（本機也可用 http://localhost:{WEB_PORT}）；Ctrl+C 結束')
+    if ENABLE_QR:
+        print_qr(url)
+    if CONTROL_PIN:
+        log('網頁開鎖需要 PIN')
+    elif ENABLE_QR:
+        log('[注意] 沒有設定 CONTROL_PIN：同網路任何人（含掃到 QR code 的人）都能從網頁開門')
     try:
-        create_web(system).run(host='0.0.0.0', port=WEB_PORT, threaded=True, use_reloader=False)
+        if want_window():
+            log(('門口顯示視窗' if ENABLE_QR else '預覽視窗') + '已開啟（在視窗按 q 或 Esc 結束整個系統）')
+            display_loop(system, url)
+        else:
+            while not system.stop.wait(0.5):
+                pass
     finally:
         system.stop.set()
         threads[0].join(timeout=3)
@@ -941,11 +1188,13 @@ def test_camera(seconds=10):
 
 
 def test_gesture(seconds=20):
-    """不需要人臉、Arduino：即時列出偵測到的手勢與信心值，最後存一張 gesture_test.jpg。"""
+    """不需要人臉、Arduino：即時顯示手勢與信心值。有螢幕時開預覽視窗畫出手部骨架（按 q 提早結束）。"""
     gesture = GestureDetector()
     camera = Camera()
+    show = has_display()
     failures, start, last_print, frame, frames = [0], time.monotonic(), 0.0, None, 0
-    log(f'手勢測試 {seconds} 秒：對鏡頭比出手勢（合格手勢：{" / ".join(ALLOWED_GESTURES)}）')
+    log(f'手勢測試 {seconds} 秒：對鏡頭比出手勢（合格手勢：{" / ".join(ALLOWED_GESTURES)}）'
+        + ('，按 q 提早結束' if show else ''))
     try:
         while time.monotonic() - start < seconds:
             frame = read_frame(camera, failures)
@@ -957,14 +1206,30 @@ def test_gesture(seconds=20):
             if pts:
                 draw_hand(frame, pts, ok)
             now = time.monotonic()
+            fps = frames / max(now - start, 1e-6)
             if now - last_print >= 0.5:
                 last_print = now
-                fps = frames / (now - start)
-                shown = f'{GESTURE_EMOJI.get(name, "")} {name} ({score:.2f})' if name else ('有手，無法判斷' if pts else '沒偵測到手')
-                print(f'  {fps:4.1f} fps | {shown}' + ('  ← 合格' if ok else ''), flush=True)
+                shown = f'{GESTURE_LABEL.get(name, name)} ({score:.2f})' if name else ('有手，無法判斷' if pts else '沒偵測到手')
+                print(f'  {fps:4.1f} fps | {shown}' + ('  <- 合格' if ok else ''), flush=True)
+            if show:
+                fh, fw = frame.shape[:2]
+                if name:
+                    draw_label(frame, f'{name}  {score:.2f}', (12, 34), 0.9,
+                               (255, 255, 255), (0, 150, 0) if ok else (0, 110, 200))
+                    draw_bar(frame, 12, 48, 200, 12, score, (0, 200, 0) if ok else (0, 160, 255))
+                else:
+                    draw_label(frame, 'Hand found, unknown gesture' if pts else 'No hand', (12, 34), 0.8,
+                               (255, 255, 255), (80, 80, 80))
+                draw_label(frame, f'Accept: {" / ".join(ALLOWED_GESTURES)}   {fps:.0f} fps', (12, fh - 16), 0.55)
+                draw_label(frame, f'{max(0, seconds - (now - start)):.0f}s', (fw - 60, 34), 0.7)
+                cv2.imshow('Gesture test (q = quit)', frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
     finally:
         camera.close()
         gesture.close()
+        if show:
+            cv2.destroyAllWindows()
     if frame is not None:
         cv2.imwrite(str(BASE / 'gesture_test.jpg'), frame)
         log(f'最後一張存到 {BASE / "gesture_test.jpg"}')
@@ -1004,6 +1269,8 @@ def menu():
 def main(argv):
     commands = {'train': train, 'run': run, 'test-arduino': test_arduino, 'test-camera': test_camera,
                 'test-gesture': test_gesture}
+    if ENABLE_QR:
+        commands['qr'] = show_qr
     try:
         if not argv:
             menu()
