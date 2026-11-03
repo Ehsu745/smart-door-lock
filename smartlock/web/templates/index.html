@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>智慧門鎖（人臉＋手勢）</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <h2>智慧門鎖（人臉＋手勢）</h2>
+  <img src="/video_feed" alt="門口即時影像">
+
+  <div id="pinbox">PIN：<input id="pin" type="password" inputmode="numeric" autocomplete="off"></div>
+
+  <div>
+    <button onclick="act('unlock')">解鎖</button>
+    <button class="lock" onclick="act('lock')">上鎖並暫停自動</button>
+    <button class="auto" onclick="act('auto')">恢復自動解鎖</button>
+  </div>
+
+  <div class="card" id="s">載入中</div>
+  <div class="card"><b>事件</b><ul id="ev"></ul></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

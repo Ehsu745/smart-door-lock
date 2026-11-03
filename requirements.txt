@@ -3,4 +3,5 @@
 mediapipe==0.10.18
 flask
 pyserial
+qrcode         # 門口視窗與終端機的 QR code
 certifi        # 下載手勢模型用（macOS 的 Python 常缺根憑證）

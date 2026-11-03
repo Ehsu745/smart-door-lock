@@ -16,6 +16,3 @@ smartlock.env
 # 測試輸出
 *_test.jpg
 *.log
-
-# macOS
-.DS_Store

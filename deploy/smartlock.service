@@ -1,0 +1,26 @@
+# 智慧門鎖背景服務（開機自動啟動、當機自動重啟）
+# 安裝：bash deploy/install_service.sh   （會自動把 __USER__ / __DIR__ 換成實際值）
+[Unit]
+Description=Smart door lock (face + gesture)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__DIR__
+# 機密與個人設定放這個檔（PIN、之後的 LINE token），不進 git
+EnvironmentFile=-__DIR__/smartlock.env
+Environment=PYTHONUNBUFFERED=1
+Environment=SHOW_WINDOW=0
+ExecStart=__DIR__/.venv/bin/python app.py run
+# systemctl stop 送 SIGTERM，程式會先送 LOCK 再結束
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=5
+# 相機與序列埠權限
+SupplementaryGroups=video dialout
+
+[Install]
+WantedBy=multi-user.target
