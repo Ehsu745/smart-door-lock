@@ -19,3 +19,7 @@ smartlock.env
 
 # 哨兵錄影與資料庫（含人臉影像）
 records/
+
+# 網頁 PIN（雜湊）
+pin.json
+pin.tmp

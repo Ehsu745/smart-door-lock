@@ -12,6 +12,9 @@
   python app.py qr              在終端機印出控制頁網址的 QR code
   python app.py records         哨兵錄影清單、容量與最近的事件紀錄
   python app.py cleanup         立即執行容量管理（刪除過期 / 超量的錄影）
+  python app.py set-pin         設定或重設網頁 PIN（忘記 PIN 時用）
+
+設定會自動從專案資料夾的 smartlock.env 讀取；指令前面加的環境變數優先。
 （也可以用 python -m smartlock <指令>）
 """
 from __future__ import annotations
@@ -34,7 +37,10 @@ from .door import DoorSystem
 from .events import EventBus
 from .face import FaceRecognizer, capture, load_detector, train
 from .gesture import GestureDetector, draw_hand
+from .config import PROJECT_ROOT
 from .qr import control_url, print_qr
+from .line import LineClient
+from .security import ENV_FILE, PinStore, load_env_file
 from .sentinel import Sentinel
 from .storage import Storage
 from .web import create_web
@@ -68,6 +74,8 @@ def run(cfg: Config):
     camera = Camera(cfg)
     arduino = FakeArduino(cfg) if cfg.simulate else Arduino(cfg)
     system = DoorSystem(cfg, arduino, recognizer, gesture, EventBus())
+    system.pins = PinStore(cfg.pin_file, cfg.control_pin)
+    system.info = {'camera': camera.name, 'gesture': getattr(gesture, 'mode', '') if gesture else '未使用'}
     storage = Storage(cfg)
     system.bus.subscribe('*', storage.log_event)      # 所有事件寫入 SQLite（網頁「事件紀錄」）
     removed = storage.enforce()
@@ -92,7 +100,8 @@ def run(cfg: Config):
     worker = threading.Thread(target=system.run_loop, args=(camera,), daemon=True, name='recognition')
     worker.start()
     threading.Thread(target=arduino.watchdog, args=(system.stop,), daemon=True, name='arduino-watchdog').start()
-    web = create_web(system, storage)
+    line = LineClient(cfg.line_token) if cfg.line_token else None
+    web = create_web(system, storage, line)
     threading.Thread(target=lambda: web.run(host='0.0.0.0', port=cfg.web_port, threaded=True, use_reloader=False),
                      daemon=True, name='web').start()
 
@@ -100,10 +109,11 @@ def run(cfg: Config):
     log.info('網頁控制台：%s（本機也可用 http://localhost:%d）；Ctrl+C 結束', url, cfg.web_port)
     if cfg.enable_qr:
         print_qr(url)
-    if cfg.control_pin:
-        log.info('網頁開鎖需要 PIN')
+    if system.pins.required:
+        log.info('網頁開鎖需要 PIN（來源：%s）', 'pin.json' if system.pins.source == 'file' else 'CONTROL_PIN')
     elif cfg.enable_qr:
-        log.info('[注意] 沒有設定 CONTROL_PIN：同網路任何人（含掃到 QR code 的人）都能從網頁開門')
+        log.info('[注意] 沒有設定 PIN：同網路任何人（含掃到 QR code 的人）都能從網頁開門。'
+                 '用 python app.py set-pin 設定')
     try:
         if want_window(cfg):
             log.info('%s已開啟（在視窗按 q 或 Esc 結束整個系統）', '門口顯示視窗' if cfg.enable_qr else '預覽視窗')
@@ -228,8 +238,8 @@ def test_gesture(cfg: Config, seconds: float = 20):
 
 def show_qr(cfg: Config):
     print_qr(control_url(cfg))
-    if not cfg.control_pin:
-        print('[注意] 沒有設定 CONTROL_PIN：任何掃到這個 QR code 的人都能開門。建議 CONTROL_PIN=1234 python app.py run')
+    if not PinStore(cfg.pin_file, cfg.control_pin).required:
+        print('[注意] 沒有設定 PIN：任何掃到這個 QR code 的人都能開門。用 python app.py set-pin 設定')
 
 
 # ==========================================
@@ -257,6 +267,17 @@ def cleanup(cfg: Config):
     storage = Storage(cfg)
     print(f'已刪除 {storage.enforce()} 段錄影')
     show_records(cfg)
+
+
+def set_pin(cfg: Config):
+    import getpass
+    store = PinStore(cfg.pin_file, cfg.control_pin)
+    print(f'目前：{"已設定 PIN" if store.required else "沒有 PIN"}（來源：{store.source}）')
+    new = getpass.getpass('新的 PIN（4–8 位數字）：')
+    if getpass.getpass('再輸入一次：') != new:
+        raise ValueError('兩次輸入不一樣，PIN 沒有變更')
+    store.set(new)
+    print(f'PIN 已更新，存在 {cfg.pin_file}（只存雜湊）。正在執行的門鎖系統會自動套用，用舊 PIN 登入的手機要重新輸入。')
 
 
 def menu(cfg: Config):
@@ -293,10 +314,13 @@ def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     setup_logging()
     try:
+        loaded = load_env_file(PROJECT_ROOT / ENV_FILE)
+        if loaded:
+            log.info('已讀取 %s（%d 項設定）', ENV_FILE, len(loaded))
         cfg = Config.from_env()
         commands = {'train': train, 'run': run, 'test-arduino': test_arduino,
                     'test-camera': test_camera, 'test-gesture': test_gesture,
-                    'records': show_records, 'cleanup': cleanup}
+                    'records': show_records, 'cleanup': cleanup, 'set-pin': set_pin}
         if cfg.enable_qr:
             commands['qr'] = show_qr
         if not argv:

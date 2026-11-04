@@ -1,5 +1,7 @@
 """測試共用的假物件：假時鐘、假人臉辨識、假手勢、假 Arduino。不需要相機或任何硬體。"""
+import dataclasses
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -7,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from smartlock.config import Config          # noqa: E402
+from smartlock.config import PROJECT_ROOT, Config   # noqa: E402
 from smartlock.door import DoorSystem         # noqa: E402
 from smartlock.face import FaceResult         # noqa: E402
 
@@ -69,7 +71,10 @@ class Harness:
     """把 DoorSystem 和所有假物件包在一起，提供 step(秒數, faces=..., gesture=...)。"""
 
     def __init__(self, cfg=None, with_gesture=True, arduino=None):
-        self.cfg = cfg or Config()
+        cfg = cfg or Config()
+        if Path(cfg.base) == PROJECT_ROOT:          # 測試不碰專案資料夾（Pi 上可能有真的 pin.json、records/）
+            cfg = dataclasses.replace(cfg, base=Path(tempfile.mkdtemp(prefix='smartlock-test-')))
+        self.cfg = cfg
         self.clock = FakeClock()
         self.recognizer = FakeRecognizer()
         self.gesture = FakeGesture() if with_gesture else None

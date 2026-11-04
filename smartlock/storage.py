@@ -11,6 +11,7 @@ events  表：門禁事件文字紀錄（開鎖、訪客、PIN 錯誤…），�
 """
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import sqlite3
@@ -18,7 +19,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from .config import Config
 
@@ -45,6 +46,10 @@ CREATE TABLE IF NOT EXISTS events (
     time  REAL NOT NULL,
     kind  TEXT NOT NULL,
     text  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS presence (
+    name  TEXT PRIMARY KEY,              -- 成員最近一次被認出的時間
+    last  REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_records_started ON records(started);
 CREATE INDEX IF NOT EXISTS idx_events_time ON events(time);
@@ -77,6 +82,9 @@ class Storage:
         self.db = sqlite3.connect(str(self.root / DB_NAME), check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        cols = {r[1] for r in self.db.execute('PRAGMA table_info(events)')}
+        if 'data' not in cols:                   # v2.1 的資料庫沒有這欄，直接補上
+            self.db.execute('ALTER TABLE events ADD COLUMN data TEXT')
         # 上次程式中斷時還在錄的那段：檔案可能不完整，標成 failed（仍可下載）
         self.db.execute("UPDATE records SET status='failed' WHERE status='recording'")
         self.db.commit()
@@ -141,21 +149,44 @@ class Storage:
     # ==========================================
     def log_event(self, event) -> None:
         """訂閱 EventBus 用：bus.subscribe('*', storage.log_event)。"""
+        if event.kind == 'seen' and event.data.get('category') in ('master', 'guest'):
+            self.touch(event.data['name'])
         if event.kind in SKIP_EVENTS or not event.text:
             return
+        data = json.dumps(event.data, ensure_ascii=False) if event.data else None
         with self._lock:
-            self.db.execute('INSERT INTO events (time, kind, text) VALUES (?, ?, ?)',
-                            (self.wallclock(), event.kind, event.text))
+            self.db.execute('INSERT INTO events (time, kind, text, data) VALUES (?, ?, ?, ?)',
+                            (self.wallclock(), event.kind, event.text, data))
             self.db.commit()
 
-    def list_events(self, limit: int = 100, kinds: Optional[List[str]] = None) -> List[dict]:
-        sql, args = 'SELECT * FROM events', []
+    def touch(self, name: str) -> None:
+        with self._lock:
+            self.db.execute('INSERT INTO presence (name, last) VALUES (?, ?) '
+                            'ON CONFLICT(name) DO UPDATE SET last=excluded.last', (name, self.wallclock()))
+            self.db.commit()
+
+    def last_seen(self) -> Dict[str, float]:
+        with self._lock:
+            return {r['name']: r['last'] for r in self.db.execute('SELECT name, last FROM presence')}
+
+    def list_events(self, limit: int = 100, kinds: Optional[List[str]] = None,
+                    before: Optional[int] = None) -> List[dict]:
+        where, args = [], []
         if kinds:
-            sql += f' WHERE kind IN ({",".join("?" * len(kinds))})'
-            args = list(kinds)
+            where.append(f'kind IN ({",".join("?" * len(kinds))})')
+            args += list(kinds)
+        if before:
+            where.append('id < ?')
+            args.append(before)
+        sql = 'SELECT * FROM events' + (' WHERE ' + ' AND '.join(where) if where else '')
         with self._lock:
             rows = self.db.execute(sql + ' ORDER BY id DESC LIMIT ?', args + [limit]).fetchall()
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            e = dict(r)
+            e['data'] = json.loads(e['data']) if e.get('data') else {}
+            out.append(e)
+        return out
 
     # ==========================================
     # 容量管理

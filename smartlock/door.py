@@ -41,6 +41,8 @@ class DoorSystem:
         self.bus.subscribe('*', self._record)
         self.frame_hooks = []                # 每幀呼叫 hook(frame, faces, now)，例如哨兵錄影
         self.providers = {}                  # 名稱 → 回傳 dict 的函式，結果併入 snapshot()（網頁狀態）
+        self.pins = None                     # PinStore；None = 只看 cfg.control_pin（測試用）
+        self.info = {}                       # 相機、手勢模式等靜態資訊，給網頁「設定」
 
         self.guard = threading.Lock()
         self.stop = threading.Event()
@@ -50,7 +52,7 @@ class DoorSystem:
         self.state = {'name': NO_FACE, 'category': '', 'distance': None,
                       'auto': True, 'message': '啟動中',
                       'require_gesture': cfg.require_gesture, 'phase': 'face', 'countdown': None,
-                      'gesture': None, 'gesture_score': None, 'visitor': None, 'visitor_since': None,
+                      'gesture': None, 'gesture_score': None, 'target': None, 'visitor': None, 'visitor_since': None,
                       'allowed': cfg.gesture_labels()}
 
         # ---- 狀態機內部狀態 ----
@@ -93,8 +95,11 @@ class DoorSystem:
         data['events'] = self.event_log.recent()
         data['arduino'] = self.arduino.status
         data['connected'] = self.arduino.connected
-        data['pin_required'] = bool(self.cfg.control_pin)
-        data['unlocked'] = self.clock() < self.unlocked_until
+        data['pin_required'] = self.pins.required if self.pins is not None else bool(self.cfg.control_pin)
+        left = self.unlocked_until - self.clock()
+        data['unlocked'] = left > 0
+        data['unlock_left'] = round(max(0.0, left), 1)
+        data['unlock_seconds'] = self.cfg.unlock_seconds
         for name, provider in self.providers.items():
             try:
                 data[name] = provider()
@@ -110,7 +115,8 @@ class DoorSystem:
             if command == 'UNLOCK':
                 self.update(visitor=None, visitor_since=None)
         self.update(message=msg)
-        text = f'{reason} → {command} {"成功" if ok else "失敗：" + msg}'
+        done = '已開鎖' if command == 'UNLOCK' else '已上鎖'
+        text = f'{reason} → {done}' if ok else f'{reason} → {"開鎖" if command == "UNLOCK" else "上鎖"}失敗：{msg}'
         if ok:
             self.emit(command.lower(), text, reason=reason)
         else:
@@ -164,6 +170,7 @@ class DoorSystem:
         self.update(name=name, category=category,
                     distance=None if best is None else round(float(best), 1),
                     phase=self._phase, gesture=g_name,
+                    target=self._target_name if self._phase == 'gesture' else None,
                     gesture_score=None if g_score is None else round(float(g_score), 2),
                     countdown=round(max(0.0, self._deadline - now), 1) if self._phase == 'gesture' else None)
         return frame

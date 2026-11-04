@@ -17,14 +17,15 @@ def client(pin=''):
 def test_index_and_static_files():
     _, c = client()
     assert '智慧門鎖' in c.get('/').get_data(as_text=True)
-    assert c.get('/static/app.js').status_code == 200
-    assert c.get('/static/style.css').status_code == 200
+    for f in ('app.js', 'app.css', 'qrcode.min.js'):
+        assert c.get(f'/static/{f}').status_code == 200, f
 
 
 def test_status_fields():
     _, c = client()
     d = c.get('/api/status').get_json()
-    for key in ('name', 'phase', 'auto', 'events', 'arduino', 'connected', 'pin_required', 'unlocked', 'allowed'):
+    for key in ('name', 'phase', 'auto', 'events', 'arduino', 'connected', 'pin_required', 'unlocked', 'allowed',
+                'unlock_left', 'unlock_seconds'):
         assert key in d
 
 
@@ -34,12 +35,19 @@ def test_unlock_without_pin():
     assert r.status_code == 200 and h.arduino.commands == ['UNLOCK']
 
 
-@pytest.mark.parametrize('pin', ['', '0000'])
-def test_wrong_pin_rejected(pin):
+def test_wrong_pin_rejected():
     h, c = client('4321')
-    r = c.post('/api/action', json={'action': 'unlock', 'pin': pin})
+    r = c.post('/api/action', json={'action': 'unlock', 'pin': '0000'})
     assert r.status_code == 403 and h.arduino.commands == []
     assert 'pin_rejected' in h.kinds()
+
+
+def test_missing_pin_asks_login_without_counting_failure():
+    h, c = client('4321')
+    for _ in range(6):
+        assert c.post('/api/action', json={'action': 'unlock'}).status_code == 401
+    assert 'pin_rejected' not in h.kinds()
+    assert c.post('/api/action', json={'action': 'unlock', 'pin': '4321'}).status_code == 200   # 沒被鎖定
 
 
 def test_correct_pin_accepted():
@@ -48,11 +56,13 @@ def test_correct_pin_accepted():
     assert r.status_code == 200 and h.arduino.commands == ['UNLOCK']
 
 
-def test_lock_pauses_auto_and_auto_resumes():
+def test_lock_and_auto_toggle_are_separate():
     h, c = client()
     c.post('/api/action', json={'action': 'lock'})
+    assert h.system.state['auto'] is True and h.arduino.commands == ['LOCK']      # 上鎖不再關掉自動解鎖
+    c.post('/api/action', json={'action': 'auto_off'})
     assert h.system.state['auto'] is False and h.arduino.commands == ['LOCK']
-    c.post('/api/action', json={'action': 'auto'})
+    c.post('/api/action', json={'action': 'auto'})                                  # 舊名稱仍可用
     assert h.system.state['auto'] is True
 
 
@@ -137,7 +147,105 @@ def test_records_open_without_pin(tmp_path):
     assert c.get('/api/records').status_code == 200
 
 
-def test_records_page_served(tmp_path):
+def test_old_records_url_redirects_to_timeline(tmp_path):
     _, _, _, c = records_client(tmp_path)
-    assert '哨兵紀錄' in c.get('/records').get_data(as_text=True)
-    assert c.get('/static/records.js').status_code == 200
+    r = c.get('/records')
+    assert r.status_code == 302 and r.headers['Location'].endswith('/#history')
+
+
+# ==========================================
+# 登入 session：輸入一次 PIN 之後開鎖不用再附 PIN
+# ==========================================
+def test_session_login_allows_actions_without_pin():
+    h, c = client('4321')
+    assert c.post('/api/action', json={'action': 'unlock'}).status_code == 401
+    assert c.post('/api/login', json={'pin': '4321'}).get_json()['success']
+    assert c.post('/api/action', json={'action': 'unlock'}).status_code == 200
+    c.post('/api/logout')
+    assert c.post('/api/action', json={'action': 'unlock'}).status_code == 401
+    assert h.arduino.commands == ['UNLOCK']
+
+
+def test_action_with_pin_also_logs_in():
+    h, c = client('4321')
+    assert c.post('/api/action', json={'action': 'lock', 'pin': '4321'}).status_code == 200
+    assert c.get('/api/session').get_json()['logged_in']
+
+
+# ==========================================
+# 變更 PIN
+# ==========================================
+def test_change_pin_flow(tmp_path):
+    h = Harness(Config(base=tmp_path, control_pin='1111'))
+    app = create_web(h.system)
+    me, other = app.test_client(), app.test_client()
+    other.post('/api/login', json={'pin': '1111'})
+    assert me.post('/api/pin', json={'old': '0000', 'new': '2222'}).status_code == 403
+    assert me.post('/api/pin', json={'old': '1111', 'new': '12a'}).status_code == 400
+    r = me.post('/api/pin', json={'old': '1111', 'new': '246810'})
+    assert r.get_json()['success']
+    assert me.get('/api/session').get_json()['logged_in']           # 自己保持登入
+    assert not other.get('/api/session').get_json()['logged_in']    # 其他手機要重新輸入
+    assert other.post('/api/login', json={'pin': '1111'}).status_code == 403
+    assert other.post('/api/login', json={'pin': '246810'}).status_code == 200
+    assert 'pin_changed' in h.kinds()
+    assert '246810' not in (tmp_path / 'pin.json').read_text()       # 不存明碼
+
+
+def test_set_first_pin_when_none(tmp_path):
+    h = Harness(Config(base=tmp_path))
+    c = create_web(h.system).test_client()
+    assert c.post('/api/pin', json={'new': '5555'}).get_json()['success']
+    assert h.system.snapshot()['pin_required']
+
+
+# ==========================================
+# 成員、設定、時間軸
+# ==========================================
+def test_users_and_photo(tmp_path):
+    import cv2
+    h = Harness(Config(base=tmp_path))
+    h.recognizer.mapping = {0: ('eric', 'master'), 1: ('amy', 'guest')}
+    (tmp_path / 'faces').mkdir()
+    for i in range(3):
+        cv2.imwrite(str(tmp_path / 'faces' / f'eric_{i}.jpg'), np.zeros((50, 50), np.uint8))
+    st = Storage(h.cfg)
+    h.system.bus.subscribe('*', st.log_event)
+    h.system.emit('seen', '看到 eric master', name='eric', category='master')
+    c = create_web(h.system, st).test_client()
+    users = {u['name']: u for u in c.get('/api/users').get_json()['users']}
+    assert users['eric']['role'] == 'master' and users['eric']['photos'] == 3 and users['eric']['last_seen']
+    assert users['amy']['role'] == 'guest' and users['amy']['last_seen'] is None
+    assert c.get('/api/users/eric/photo').data[:2] == b'\xff\xd8'
+    assert c.get('/api/users/amy/photo').status_code == 404
+    assert c.get('/api/users/..%2fface/photo').status_code == 404
+
+
+def test_users_need_login(tmp_path):
+    h = Harness(Config(base=tmp_path, control_pin='4321'))
+    c = create_web(h.system).test_client()
+    for url in ('/api/users', '/api/settings'):
+        assert c.get(url).status_code == 401
+
+
+def test_settings(tmp_path):
+    from smartlock.line import LineClient
+    h = Harness(Config(base=tmp_path, line_basic_id='@your_line_id'))
+    st = Storage(h.cfg, disk_usage=lambda p: (100_000 * MB, 0, 50_000 * MB))
+    h.system.info = {'camera': 'Pi 相機（rpicam）'}
+    c = create_web(h.system, st, None).test_client()
+    d = c.get('/api/settings').get_json()
+    assert d['line'] == {'configured': False, 'basic_id': '@your_line_id', 'target': 'broadcast'}
+    assert d['storage']['limit_mb'] == 2048 and d['system']['camera'] == 'Pi 相機（rpicam）'
+    assert d['security'] == {'pin_required': False, 'source': 'none'}
+
+
+def test_events_include_clip(tmp_path):
+    h, st, rid, c = records_client(tmp_path)
+    c.post('/api/login', json={'pin': '4321'})
+    from smartlock.events import Event
+    st.log_event(Event('sentinel_saved', f'錄影 #{rid} 已儲存', {'record_id': rid, 'duration': 0.5}))
+    st.log_event(Event('sentinel_saved', '錄影 #99 已儲存', {'record_id': 99, 'duration': 3}))
+    ev = c.get('/api/events?kinds=sentinel_saved').get_json()['events']
+    assert ev[0]['clip'] == {'id': 99, 'deleted': True}
+    assert ev[1]['clip']['id'] == rid and ev[1]['clip']['snapshot'] is True

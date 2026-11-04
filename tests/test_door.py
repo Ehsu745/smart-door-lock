@@ -151,4 +151,4 @@ def test_broken_subscriber_does_not_break_state_machine(h):
 def test_snapshot_contains_recent_events(h):
     h.step(1.0, [MASTER]).step(0.5, [MASTER], 'Thumb_Up')
     events = h.system.snapshot()['events']
-    assert events and '→ UNLOCK 成功' in events[0]
+    assert events and '→ 已開鎖' in events[0]

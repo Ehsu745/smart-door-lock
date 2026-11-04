@@ -100,7 +100,8 @@ def compose_display(system, cfg: Config, url: str, qr):
     short = url.replace('http://', '')
     cv2.putText(panel, short, (14, y), font, 0.5 if len(short) < 26 else 0.42, (90, 90, 90), 1)
     y += 18
-    if cfg.control_pin:
+    pins = getattr(system, 'pins', None)
+    if (pins.required if pins is not None else cfg.control_pin):
         cv2.putText(panel, '(PIN required)', (14, y), font, 0.45, (120, 120, 120), 1)
     cv2.rectangle(panel, (10, h - 82), (PANEL_W - 10, h - 12), color, -1)
     cv2.putText(panel, text, (22, h - 46), font, 0.95, (255, 255, 255), 2)

@@ -1,26 +1,114 @@
 <!doctype html>
 <html lang="zh-Hant">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>智慧門鎖（人臉＋手勢）</title>
-  <link rel="stylesheet" href="/static/style.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#E8ECEA">
+<title>智慧門鎖</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-  <h2>智慧門鎖（人臉＋手勢）</h2>
-  <img src="/video_feed" alt="門口即時影像">
+<div class="app">
+  <header class="top">
+    <h1>智慧門鎖</h1>
+    <span class="demo" id="demoTag" hidden>示範資料</span>
+    <span class="conn" id="conn"><i></i><span id="connText">連線中</span></span>
+  </header>
 
-  <div id="pinbox">PIN：<input id="pin" type="password" inputmode="numeric" autocomplete="off"></div>
+  <div class="viewport" id="viewport">
+    <div class="track" id="track">
 
-  <div>
-    <button onclick="act('unlock')">解鎖</button>
-    <button class="lock" onclick="act('lock')">上鎖並暫停自動</button>
-    <button class="auto" onclick="act('auto')">恢復自動解鎖</button>
+      <!-- 1. 門鎖 -->
+      <section class="page" id="p-door" aria-label="門鎖">
+        <div class="cam">
+          <canvas id="demoCam" width="480" height="360" hidden></canvas>
+          <img id="live" alt="門口即時影像" hidden>
+          <div class="who" id="who">無人</div>
+          <div class="rec" id="rec" hidden><i></i>REC</div>
+        </div>
+        <div class="notice guest" id="guestNote" hidden>
+          <div><b id="guestName"></b> 在門口<br><span style="font-size:12px">訪客不會自動開門，要讓他進來就按住鎖開門</span></div>
+        </div>
+        <div class="notice gesture" id="gestureNote" hidden>
+          <div><b id="gestureName"></b> 人臉通過<br><span style="font-size:12px" id="gestureHint"></span></div>
+          <span class="count" id="gestureCount"></span>
+        </div>
+
+        <div class="lockzone">
+          <button class="dial" id="dial" aria-label="按住解鎖">
+            <svg viewBox="0 0 110 110" aria-hidden="true">
+              <circle class="face" cx="55" cy="55" r="46"/>
+              <circle class="ring timer" id="timerRing" cx="55" cy="55" r="46" style="stroke-dashoffset:289;opacity:0"/>
+              <circle class="ring hold" id="holdRing" cx="55" cy="55" r="46"/>
+              <path class="shackle" d="M44 50 V40 a11 11 0 0 1 22 0 V50"/>
+              <rect class="lock-body" x="38" y="49" width="34" height="27" rx="5"/>
+              <circle cx="55" cy="61" r="3.5" fill="#fff"/><rect x="53.6" y="62" width="2.8" height="7" rx="1.2" fill="#fff"/>
+            </svg>
+          </button>
+          <div class="state" aria-live="polite">
+            <strong id="stateTitle">已上鎖</strong>
+            <span id="stateSub">按住鎖 1 秒解鎖</span>
+          </div>
+        </div>
+
+        <div class="controls">
+          <button class="btn lock" id="lockBtn">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+            立即上鎖
+          </button>
+          <button class="toggle" id="autoToggle" role="switch" aria-checked="true">
+            <span>自動解鎖<small id="autoSub">人臉＋手勢</small></span><span class="switch"></span>
+          </button>
+        </div>
+      </section>
+
+      <!-- 2. 成員 -->
+      <section class="page" id="p-people" aria-label="成員">
+        <h2>成員</h2>
+        <div class="scroll" id="peopleList"></div>
+      </section>
+
+      <!-- 3. 紀錄 -->
+      <section class="page" id="p-history" aria-label="紀錄">
+        <h2>紀錄</h2>
+        <div class="chips" id="chips"></div>
+        <div class="scroll" id="timeline"></div>
+      </section>
+
+      <!-- 4. 設定 -->
+      <section class="page" id="p-settings" aria-label="設定">
+        <h2>設定</h2>
+        <div class="scroll" id="settings"></div>
+      </section>
+    </div>
   </div>
 
-  <div class="card" id="s">載入中</div>
-  <div class="card"><b>事件</b><ul id="ev"></ul><a class="link" href="/records">查看哨兵錄影與完整事件紀錄 ›</a></div>
+  <nav class="tabs" role="tablist" aria-label="頁面">
+    <div class="tab-ind" id="tabInd"></div>
+    <button class="tab" role="tab" aria-selected="true" data-i="0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>門鎖</button>
+    <button class="tab" role="tab" aria-selected="false" data-i="1">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17.5" cy="9" r="2.6"/><path d="M16 14.2a5 5 0 0 1 6 4.8"/></svg>成員</button>
+    <button class="tab" role="tab" aria-selected="false" data-i="2">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3v18"/><circle cx="6" cy="7" r="2.2" fill="var(--panel)"/><circle cx="6" cy="16" r="2.2" fill="var(--panel)"/><path d="M11 7h9M11 16h9"/></svg>紀錄<i class="badge-dot" id="histDot" hidden></i></button>
+    <button class="tab" role="tab" aria-selected="false" data-i="3">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>設定</button>
+  </nav>
+</div>
 
-  <script src="/static/app.js"></script>
+<!-- 底部抽屜 -->
+<div class="scrim" id="scrim"></div>
+<div class="sheet" id="sheet" role="dialog" aria-modal="true">
+  <div class="grab"></div>
+  <button class="close" onclick="closeSheet()" aria-label="關閉">×</button>
+  <div id="sheetBody"></div>
+</div>
+<div class="toast" id="toast" role="status"></div>
+
+<script src="/static/qrcode.min.js"></script>
+<script src="/static/app.js"></script>
 </body>
 </html>

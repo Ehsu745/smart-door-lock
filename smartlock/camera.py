@@ -92,11 +92,13 @@ class Camera:
         self.impl = None
         self.picam = None
         self.cap = None
+        self.name = ''                               # 給網頁「設定」顯示
         want = cfg.camera
         size = cfg.frame_size
         if want in ('auto', 'rpicam') and sys.platform.startswith('linux') and shutil.which('rpicam-vid'):
             try:
                 self.impl = RpicamCamera(size)
+                self.name = 'Pi 相機（rpicam）'
                 log.info('相機：Pi 相機（rpicam-vid）')
                 return
             except RuntimeError as exc:
@@ -112,6 +114,7 @@ class Camera:
                         main={'size': size, 'format': 'RGB888'}))      # RGB888 的記憶體順序即 BGR
                     self.picam.start()
                     time.sleep(1)
+                    self.name = 'Pi 相機（Picamera2）'
                     log.info('相機：Pi 相機（Picamera2）')
                     return
             except ImportError:
@@ -126,6 +129,7 @@ class Camera:
                                '並關閉其他使用相機的程式')
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, size[0])
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, size[1])
+        self.name = f'USB / 內建鏡頭（{cfg.camera_index}）'
         log.info('相機：USB / 內建 webcam（編號 %s）', cfg.camera_index)
 
     def read(self):

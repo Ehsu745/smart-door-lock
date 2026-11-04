@@ -86,7 +86,16 @@ class Config:
     record_min_free_mb: float = 1024.0            # SD 卡剩餘空間低於此值時先刪舊檔，仍不足就不錄
     event_keep_days: float = 90.0                 # 文字事件紀錄保留天數
 
+    # ---- LINE ----
+    line_token: str = ''                          # Channel access token（放 smartlock.env，不要寫進程式）
+    line_basic_id: str = ''                       # 官方帳號 ID，例如 @your_line_id（加好友 QR 用）
+    line_user_id: str = ''                        # 有設定就只推給這個人，沒設定就廣播給所有好友
+
     # ---- 路徑 ----
+    @property
+    def pin_file(self) -> Path:
+        return self.base / 'pin.json'
+
     @property
     def records_path(self) -> Path:
         return Path(self.record_dir) if self.record_dir else self.base / 'records'
@@ -157,4 +166,7 @@ class Config:
             record_max_days=float(env.get('RECORD_MAX_DAYS', 7)),
             record_min_free_mb=float(env.get('RECORD_MIN_FREE_MB', 1024)),
             event_keep_days=float(env.get('EVENT_KEEP_DAYS', 90)),
+            line_token=env.get('LINE_CHANNEL_TOKEN', ''),
+            line_basic_id=env.get('LINE_BASIC_ID', ''),
+            line_user_id=env.get('LINE_USER_ID', ''),
         )

@@ -62,10 +62,19 @@ bash deploy/install_service.sh --desktop # 登入桌面後在 Pi 螢幕顯示視
 | 兩次通知最短間隔 | 5 分鐘 | `SENTINEL_COOLDOWN` |
 
 - **格式**：MJPG `.avi`，10 fps，約 0.3 MB/秒（60 秒約 20 MB）。另存臉最大的一張截圖。
-- **查看**：控制頁 →「紀錄 ›」，或 `http://<IP>:5050/records`。可回放、2 倍速、下載、刪除；另有完整事件紀錄（開鎖、訪客、PIN 錯誤…）。
-- **權限**：有設 `CONTROL_PIN` 時，看紀錄也要 PIN；PIN 連續錯 5 次鎖 60 秒。
+- **查看**：手機「紀錄」分頁的時間軸，錄影直接嵌在時間軸裡，可回放、2 倍速、下載、刪除。
+- **權限**：有 PIN 時，看紀錄、成員、設定也要先輸入 PIN；PIN 連續錯 5 次鎖 60 秒。
 - **SD 卡容量**：超過 7 天、總量超過 2 GB、或 SD 卡剩不到 1 GB 時，自動從最舊的刪起（啟動時、每段錄完、每小時檢查）。文字事件保留 90 天。
 - 資料都在 `records/`（`smartlock.db` + `clips/`），已列入 `.gitignore`，不會推上 GitHub。
+
+## 手機介面與 PIN
+
+- 單頁 App，底部四個分頁（門鎖 / 成員 / 紀錄 / 設定），點或左右滑動切換；整頁不捲動，只有紀錄和設定的內容區可以捲。
+- **按住鎖 1 秒才開門**，避免誤觸；「立即上鎖」和「自動解鎖」開關分開。
+- 輸入一次 PIN 後，這支手機在本次啟動期間都不用再輸入；改 PIN 後所有手機都要重新輸入。
+- PIN 來源：`pin.json`（網頁或 `python app.py set-pin` 設定，PBKDF2 雜湊、權限 600）優先，其次是 `smartlock.env` 的 `CONTROL_PIN`。
+- 沒有 PIN 的手機按開鎖只會跳出鍵盤，不算 PIN 錯誤，不會觸發鎖定。
+- 開發版面時可以不接 Pi：`cd smartlock/web && python3 -m http.server`，開 `http://localhost:8000/templates/index.html` 會自動進入示範模式。
 
 ## 程式結構
 
@@ -75,7 +84,9 @@ smartlock/
   config.py            所有設定（環境變數）集中一處
   events.py            事件匯流排：開鎖、訪客、失敗… 都發事件，錄影、紀錄、之後的 LINE 通知各自訂閱
   sentinel.py          哨兵：陌生人逗留自動錄影（預錄緩衝、背景寫檔）
-  storage.py           SQLite 紀錄 + SD 卡容量管理
+  storage.py           SQLite 紀錄 + SD 卡容量管理 + 成員最近出現時間
+  security.py          PIN 雜湊儲存、smartlock.env 載入
+  line.py              LINE 額度查詢（通知發送下一步加入）
   door.py              狀態機（人臉 → 手勢 → 開鎖），不碰硬體，可單獨測試
   face.py              人臉偵測、辨識、採集、訓練
   gesture.py           MediaPipe 手勢（含備援規則）
@@ -83,9 +94,9 @@ smartlock/
   camera.py            rpicam / Picamera2 / USB 相機
   display.py           門口視窗畫面
   qr.py                控制頁 QR code
-  web/                 Flask 控制頁（server.py + templates/ + static/）
+  web/                 Flask API + 單頁 App（templates/index.html、static/app.js、app.css）
   cli.py               指令列與選單
-tests/                 74 個自動測試，不需要相機或 Arduino
+tests/                 96 個自動測試，不需要相機或 Arduino
 deploy/                systemd 服務與安裝腳本
 arduino/door_lock/     學弟的 Arduino sketch
 ```
@@ -97,4 +108,6 @@ arduino/door_lock/     學弟的 Arduino sketch
 - **網頁**：PIN 錯誤/正確、連續錯誤鎖定、上鎖暫停自動、無效指令；紀錄頁需登入、回放、下載、刪除。
 - **哨兵**：短暫出現不錄、超過 5 秒錄影且含預錄、master 出現取消、偵測短暫中斷容忍、遠處臉忽略、長時間分段、通知冷卻、迴圈變慢時影片仍是實際長度、SD 空間不足不錄。
 - **容量管理**：依容量 / 天數 / SD 剩餘空間自動刪最舊的、中斷的錄影標成不完整、路徑不能跑出 records 資料夾。
-- **其他**：設定讀取、手勢規則、QR code 可解碼、訓練保留 guest 分類。
+- **PIN 與登入**：雜湊不存明碼、檔案權限 600、檔案優先於 CONTROL_PIN、set-pin 後執行中系統自動套用、改 PIN 後其他手機失效、沒附 PIN 不算錯誤。
+- **新 API**：成員與頭像、設定、時間軸附錄影資訊（已刪除的錄影會標示）、LINE 額度快取與 token 錯誤。
+- **其他**：設定讀取（含 smartlock.env）、手勢規則、QR code 可解碼、訓練保留 guest 分類。
