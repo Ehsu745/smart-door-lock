@@ -31,9 +31,11 @@ Pi Camera 3 NoIR ─▶ Raspberry Pi 5 (4GB) ──USB 序列埠──▶ Arduin
 
 額外完成：手機單頁 App（門鎖 / 成員 / 紀錄 / 設定）、PIN 雜湊與網頁變更、網頁變更主人/訪客、網頁刪除成員（v2.4：警告無法復原 → PIN → 刪照片並重新訓練）、串流連線數修正（網站「當掉」問題）、依手機尺寸排版。
 
-**還沒在實機驗證的**：v2.2.2 之後的手機版面、v2.3 的變更權限、v2.4 的刪除成員（含 Pi 上重新訓練的耗時）、v2.5 的 LINE 真實發送、成員頁改版 —— 都只在模擬環境（Playwright + 假相機）測過。學弟的 Pi 上可能還在跑舊的單檔 `app.py`。**下一步：Pi 拿回來後部署並逐項實測。**
+**2026-11-04 Pi 實測（v2.5，`run --sim`）通過**：v2.5 直接讀舊資料（不用重訓）、手機控制頁、網頁變更權限、LINE 測試訊息 / 訪客通知（含 5 分鐘冷卻）/ 陌生人錄影 #1（31 秒）與通知、正常結束會先上鎖。Pi 上舊版完整備份在 `~/door_pi_gesture_backup_1020`。
 
-**手機頁改版（2026-11-04，尚未 commit，使用者說先不更新 git）**
+**還沒實測的**：正式模式接 Arduino（當天 `lsusb` 看不到 Arduino，只有滑鼠 → 檢查 USB 線是否為資料線）、網頁刪除成員在 Pi 上重新訓練的耗時、systemd 服務、iPhone / LINE 內建瀏覽器的滾輪手感。
+
+**手機頁改版（2026-11-04，commit 5bb1e15）**
 - 成員詳情：「資料」卡（開門方式 / 訓練照片 / 最近出現）+「管理」卡只有「修改權限 ›」
 - 修改權限子頁：標題列 ‹ 修改權限 … 頭像 ⓘ ✕；iOS 風格滾輪（主人 / 訪客）；**沒有套用鍵，離開（‹、✕、點背景、Esc）時有改才跳 PIN 生效，PIN 鍵盤按 ✕ = 放棄**（使用者同意的做法：避免滾動時一直跳 PIN）；ⓘ 是主人 / 訪客差別說明（蓋在滾輪上）；滾輪下方只在有改時顯示「離開這頁時輸入 PIN 即生效」；最下方分隔線後是「刪除成員資料」
 - 門鎖分頁：狀態列和影像同寬（`--cam-w`）；手勢提示只顯示中文名（讚 / YA），窄螢幕才放得下
@@ -107,6 +109,8 @@ docs/                  01 居家助理未來規劃（概念階段）、02 智慧
 ## 6. 環境
 
 - **Pi**：Raspberry Pi OS Trixie 64-bit，hostname `pi`、使用者 `pi`，專案在 `~/door_pi_gesture`，`.venv` 用 uv 建（Python 3.11）
+- **SSH**：Mac `~/.ssh/config` 有 `Host pi`（`raspberrypi.local`、金鑰 `~/.ssh/id_ed25519`），Claude 可直接 `ssh pi` / `rsync … pi:door_pi_gesture/`；要在 Pi 螢幕開視窗：`DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 SHOW_WINDOW=1`，背景跑用 `setsid nohup … > ~/smartlock_run.log`；停止用 `pkill -TERM -f "[a]pp.py run"`（會先上鎖）。**正式模式（會真的開鎖）啟動前先問使用者**
+- Pi 的 `smartlock.env`：`SIM_ARDUINO=1`、LINE token 已設定；成員：`eric` 訪客、`jenny` 主人
 - 網路：目前用 iPhone 熱點（Pi IP 曾是 `192.168.0.50`，會變）；學校 FCU-Auto 是 WPA2-Enterprise，放棄。之後可能改乙太網路 + Pi 開熱點（`nmcli device wifi hotspot`），還在確認場地
 - 用 SSH 啟動要在 Pi 螢幕顯示視窗：前面加 `DISPLAY=:0`
 - MediaPipe 0.10.18 沒有 Python 3.13 的 ARM wheel → Python 3.9–3.12
@@ -120,6 +124,7 @@ docs/                  01 居家助理未來規劃（概念階段）、02 智慧
 - `git log` 從最舊到最新完整保留：PC 測試版（10/14）→ Pi 單檔版 → 手勢單檔版（10/19、10/20）→ v2 模組化（11/03）→ v2.x（11/04）。舊版原始檔在 `~/FCU/CE_2026/AI_smartlock_playground/old_ver/`，不要動
 - 遠端有 `backup/pre-rebuild` 分支（2026-11-04 重建歷史前的 main），確認沒問題後可刪
 - Mac 上的開發 / 訓練資料夾：`~/FCU/CE_2026/AI_smartlock_playground/smartlock_project`（有 `.venv`、`faces/`、`face.yml`、`records/`），和 repo 分開；改完要同步進 repo 再 commit
+- **資安待辦**：見 `CLAUDE.local.md`（不進 git）
 - **待辦（使用者決定延後）**：公開 repo 前要清掉歷史裡的敏感資訊（README 有 Pi 帳號與 IP `pi@192.168.0.50`），需要改寫歷史 + force push，先問
 
 ## 7. 跟使用者合作的方式
