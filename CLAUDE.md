@@ -19,7 +19,7 @@ Pi Camera 3 NoIR ─▶ Raspberry Pi 5 (4GB) ──USB 序列埠──▶ Arduin
 - `guest` 永遠不自動開鎖，只通知；陌生人逗留 ≥ 5 秒 → 哨兵錄影
 - Arduino：送小寫 `unlock` / `lock` + `\n`，sketch 回 `Unlocked: ...` / `Locked`，8 秒後自動上鎖
 
-## 2. 目前狀態（v2.3.0）
+## 2. 目前狀態（v2.4.0）
 
 | 優化規劃項目 | 狀態 |
 |---|---|
@@ -29,7 +29,7 @@ Pi Camera 3 NoIR ─▶ Raspberry Pi 5 (4GB) ──USB 序列埠──▶ Arduin
 | 4. LINE 文字通知 | ⏳ **下一步**（額度查詢已完成，發送還沒做） |
 | 5. 軟體移動偵測 + 效能量測 | ⬜ |
 
-額外完成：手機單頁 App（門鎖 / 成員 / 紀錄 / 設定）、PIN 雜湊與網頁變更、網頁變更主人/訪客、串流連線數修正（網站「當掉」問題）、依手機尺寸排版。
+額外完成：手機單頁 App（門鎖 / 成員 / 紀錄 / 設定）、PIN 雜湊與網頁變更、網頁變更主人/訪客、網頁刪除成員（v2.4：警告無法復原 → PIN → 刪照片並重新訓練）、串流連線數修正（網站「當掉」問題）、依手機尺寸排版。
 
 **還沒在實機驗證的**：v2.2.2 之後的手機版面、v2.3 的變更權限 —— 都只在模擬環境（Playwright + 假相機）測過。學弟的 Pi 上可能還在跑舊的單檔 `app.py`。
 
@@ -37,7 +37,7 @@ Pi Camera 3 NoIR ─▶ Raspberry Pi 5 (4GB) ──USB 序列埠──▶ Arduin
 
 ```bash
 source .venv/bin/activate
-python -m pytest -q                 # 104 個測試，不需要相機或 Arduino（Mac：100 passed, 4 skipped，序列埠 pty 測試只在 Linux 跑）
+python -m pytest -q                 # 108 個測試，不需要相機或 Arduino（Mac：104 passed, 4 skipped，序列埠 pty 測試只在 Linux 跑）
 python app.py run --sim             # 完整系統，用模擬 Arduino
 python app.py records | cleanup | set-pin | test-camera | test-gesture | test-arduino
 # 只看版面（不用 Pi）：直接用瀏覽器開 smartlock/web/templates/index.html → 自動示範模式，PIN 1234
@@ -80,6 +80,7 @@ docs/                  01 居家助理未來規劃（概念階段）、02 智慧
 - 來源優先順序：`pin.json`（雜湊）> `smartlock.env` 的 `CONTROL_PIN` > 無
 - 輸入一次後同手機免再輸入（session，改 PIN 後全部失效）；沒附 PIN 回 401 不算錯誤
 - **變更主人/訪客每次都要 PIN，已登入也不算**（使用者明確要求）；錯誤鎖定仍保留
+- **刪除成員**同樣每次都要 PIN，而且前端要先顯示「此操作無法復原」警告（使用者明確要求）；API 需帶 `confirm=<名字>`；不能刪最後一位成員。`face.delete_member` 先移出名單 → 刪照片 → 重新 train → `FaceRecognizer.swap()` 同時換模型和名單（編號會重排）
 
 ## 5. 下一步：LINE 通知（規劃已定）
 

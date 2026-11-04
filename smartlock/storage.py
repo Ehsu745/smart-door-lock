@@ -165,6 +165,12 @@ class Storage:
                             'ON CONFLICT(name) DO UPDATE SET last=excluded.last', (name, self.wallclock()))
             self.db.commit()
 
+    def forget(self, name: str) -> None:
+        """刪除成員時一起清掉「最近出現」，之後同名的新成員不會沿用舊紀錄。"""
+        with self._lock:
+            self.db.execute('DELETE FROM presence WHERE name=?', (name,))
+            self.db.commit()
+
     def last_seen(self) -> Dict[str, float]:
         with self._lock:
             return {r['name']: r['last'] for r in self.db.execute('SELECT name, last FROM presence')}

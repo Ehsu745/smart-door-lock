@@ -262,6 +262,8 @@ button { font: inherit; color: inherit; }
 .warnbox { background: var(--signal-soft); color: #7c2a1a; border-radius: 12px; padding: 10px 12px; font-size: 13px; margin-bottom: 12px; }
 .infobox { background: var(--wall); border-radius: 12px; padding: 10px 12px; font-size: 13px; color: var(--ink-2); margin: 10px 0 12px; }
 .infobox code { font-size: 12px; }
+.acts-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; }
+.btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
 a.btn { color: var(--ink); text-decoration: none; }
 a.btn.line { color: #fff; }
 .rep { display: inline-block; margin-left: 6px; font: 600 12px var(--num); color: var(--ink-2); background: var(--panel); border-radius: 999px; padding: 0 7px; }

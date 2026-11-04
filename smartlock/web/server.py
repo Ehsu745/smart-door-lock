@@ -5,7 +5,7 @@
   /api/action                     unlock / lock / auto_on / auto_off（需登入或附 PIN）
   /video_feed                     即時影像 MJPEG
   /api/session、/api/login、/api/logout、/api/pin（變更 PIN）
-  /api/users、/api/users/<name>/photo
+  /api/users、/api/users/<name>/photo、/api/users/<name>/role、/api/users/<name>/delete（後兩者每次都要 PIN）
   /api/events、/api/records、/records/<id>/play|snapshot.jpg|download、DELETE /api/records/<id>
   /api/settings
 
@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 from .. import __version__
-from ..face import ROLES, set_role
+from ..face import ROLES, delete_member, photos_of as face_photos, set_role
 from ..security import PIN_RULE, PinStore
 
 WEB_DIR = Path(__file__).resolve().parent
@@ -295,7 +295,17 @@ def create_web(system, storage=None, line=None):
         return {name: kind for name, kind in mapping.values()}
 
     def photos_of(name):
-        return sorted(cfg.face_dir.glob(f'{name}_*.jpg'))
+        return face_photos(cfg, name)
+
+    def pin_every_time(data):
+        """變更權限、刪除成員：每次都要輸入 PIN，已登入也不算。回傳錯誤回應，通過則回傳 None。"""
+        if not store.required:
+            return jsonify(success=False, message='還沒設定 PIN：先到「設定 → 安全」設定 PIN，才能變更成員'), 400
+        if not data.get('pin'):
+            return jsonify(success=False, message='需要輸入 PIN'), 403
+        if not pin_ok(data.get('pin')):
+            return deny()
+        return None
 
     @app.route('/api/users')
     def users():
@@ -310,12 +320,9 @@ def create_web(system, storage=None, line=None):
         """變更主人 / 訪客。每次都要輸入 PIN：已登入（例如剛在門鎖頁開過門）也不算數。"""
         need_login()
         data = request.get_json(silent=True) or {}
-        if not store.required:
-            return jsonify(success=False, message='還沒設定 PIN：先到「設定 → 安全」設定 PIN，才能變更權限'), 400
-        if not data.get('pin'):
-            return jsonify(success=False, message='需要輸入 PIN'), 403
-        if not pin_ok(data.get('pin')):
-            return deny()
+        refused = pin_every_time(data)
+        if refused:
+            return refused
         role = data.get('role')
         if role not in ROLES:
             return jsonify(success=False, message='身分只能是主人或訪客'), 400
@@ -328,6 +335,32 @@ def create_web(system, storage=None, line=None):
                         name=name, role=role, old=old, remote=request.remote_addr)
         masters = sum(1 for k in members().values() if k == 'master')
         return jsonify(success=True, message=f'{name} 已改成{label[role]}', masters=masters)
+
+    @app.route('/api/users/<name>/delete', methods=['POST'])
+    def user_delete(name):
+        """刪除成員：照片、名單、模型特徵全部移除並重新訓練，無法復原。每次都要 PIN。"""
+        need_login()
+        data = request.get_json(silent=True) or {}
+        refused = pin_every_time(data)
+        if refused:
+            return refused
+        if name not in members():
+            abort(404)
+        if data.get('confirm') != name:          # 前端警告畫面按下確認才會帶上名字，避免誤送
+            return jsonify(success=False, message='需要確認刪除'), 400
+        try:
+            count = delete_member(cfg, system.recognizer, name)
+        except ValueError as e:
+            return jsonify(success=False, message=f'{e}，無法刪除'), 400
+        except Exception as e:                   # 訓練失敗等：照片可能已刪，名單已移除，回報給使用者
+            logging.getLogger(__name__).exception('刪除成員 %s 失敗', name)
+            return jsonify(success=False, message=f'刪除時發生錯誤：{e}'), 500
+        if storage is not None:
+            storage.forget(name)
+        system.emit('member_deleted', f'網頁刪除成員 {name}（{count} 張照片，已重新訓練）（{request.remote_addr}）',
+                    name=name, photos=count, remote=request.remote_addr)
+        masters = sum(1 for k in members().values() if k == 'master')
+        return jsonify(success=True, message=f'已刪除 {name}', masters=masters)
 
     @app.route('/api/users/<name>/photo')
     def user_photo(name):

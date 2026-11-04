@@ -4,6 +4,7 @@ from __future__ import annotations
 import glob
 import logging
 import re
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,6 +55,7 @@ def read_map(path: Path) -> Dict[int, Tuple[str, str]]:
 
 
 ROLES = ('master', 'guest')
+PHOTO_EXTS = ('.jpg', '.jpeg', '.png')
 
 
 def write_map(path: Path, mapping: Dict[int, Tuple[str, str]]) -> None:
@@ -79,6 +81,49 @@ def set_role(cfg: Config, recognizer, name: str, role: str) -> str:
     if recognizer is not None:
         recognizer.mapping = mapping            # 換掉整個 dict：辨識執行緒下一幀就用新身分
     return old
+
+
+_retrain_lock = threading.Lock()
+
+
+def photos_of(cfg: Config, name: str) -> List[Path]:
+    """faces/ 裡屬於 name 的照片（檔名 <名字>_*.jpg / .jpeg / .png，和 train 的規則一致）。"""
+    if not cfg.face_dir.exists():
+        return []
+    return sorted(p for p in cfg.face_dir.glob(f'{glob.escape(name)}_*')
+                  if p.suffix.lower() in PHOTO_EXTS and p.stem.split('_')[0] == name)
+
+
+def delete_member(cfg: Config, recognizer, name: str) -> int:
+    """刪除某人：照片、名單、模型裡的特徵全部移除，無法復原。回傳刪掉的照片張數。
+
+    順序：
+      1. 先把他從名單拿掉 → 辨識執行緒下一幀就把他當陌生人（還在用舊模型也一樣）
+      2. 刪照片
+      3. 用剩下的照片重新訓練，face.yml 裡不再有他的特徵
+      4. 新模型與新名單一起換上（編號會重排，所以兩個要同時換）
+    至少要保留一位成員：全部刪光後 face.yml 會不存在，門鎖無法啟動。"""
+    with _retrain_lock:
+        mapping = read_map(cfg.map_file)
+        names = {n for n, _ in mapping.values()}
+        if name not in names:
+            raise KeyError(name)
+        if len(names) <= 1:
+            raise ValueError('至少要保留一位成員')
+        remaining = {num: v for num, v in mapping.items() if v[0] != name}
+        write_map(cfg.map_file, remaining)
+        if recognizer is not None:
+            recognizer.mapping = remaining
+        files = photos_of(cfg, name)
+        for path in files:
+            path.unlink()
+        train(cfg)
+        if isinstance(recognizer, FaceRecognizer):
+            model = new_recognizer()
+            model.read(str(cfg.model_file))
+            recognizer.swap(model, read_map(cfg.map_file))
+        log.info('已刪除成員 %s（%d 張照片），模型已重新訓練', name, len(files))
+        return len(files)
 
 
 @dataclass
@@ -107,6 +152,12 @@ class FaceRecognizer:
         self.model = model
         self.mapping = mapping
         self.detector = detector or load_detector(cfg)
+        self._lock = threading.Lock()
+
+    def swap(self, model, mapping) -> None:
+        """同時換上新模型與新名單（重新訓練後編號會重排，分開換會有一幀認錯人）。"""
+        with self._lock:
+            self.model, self.mapping = model, mapping
 
     @classmethod
     def load(cls, cfg: Config) -> 'FaceRecognizer':
@@ -121,9 +172,11 @@ class FaceRecognizer:
 
     def identify(self, gray) -> List[FaceResult]:
         results = []
+        with self._lock:
+            model, mapping = self.model, self.mapping
         for x, y, w, h in self.detect(gray):
-            label, distance = self.model.predict(normalize(gray[y:y + h, x:x + w], self.cfg.face_size))
-            person, kind = self.mapping.get(label, ('Unknown', 'Stranger'))
+            label, distance = model.predict(normalize(gray[y:y + h, x:x + w], self.cfg.face_size))
+            person, kind = mapping.get(label, ('Unknown', 'Stranger'))
             known = distance < self.cfg.threshold and kind in ('master', 'guest')
             results.append(FaceResult((int(x), int(y), int(w), int(h)), int(label), float(distance), person, kind, known))
         return results
@@ -197,7 +250,7 @@ def train(cfg: Config) -> Dict[str, int]:
     old_category = {name: cat for name, cat in read_map(cfg.map_file).values()}
     samples, ids, labels, per_person = [], [], {}, {}
     for path in sorted(cfg.face_dir.iterdir()):
-        if path.suffix.lower() not in ('.jpg', '.jpeg', '.png'):
+        if path.suffix.lower() not in PHOTO_EXTS:
             continue
         img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
         if img is None or img.size == 0:

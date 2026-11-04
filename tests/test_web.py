@@ -347,3 +347,82 @@ def test_role_survives_retrain(tmp_path):
     set_role(cfg, None, 'eric', 'guest')
     train(cfg)
     assert ('eric', 'guest') in read_map(cfg.map_file).values()
+
+
+# ==========================================
+# 刪除成員：每次都要 PIN、要確認、無法復原（照片、名單、模型都清掉）
+# ==========================================
+def delete_client(tmp_path, pin='4321', people=('eric', 'amy', 'kevin')):
+    """用真的照片和真的 train()，確認模型裡也不再有被刪的人。"""
+    import cv2
+    from smartlock.face import read_map, train
+    h = Harness(Config(base=tmp_path, control_pin=pin))
+    h.cfg.face_dir.mkdir()
+    rng = np.random.default_rng(2)
+    imgs = {}
+    for name in people:
+        imgs[name] = rng.integers(0, 255, (120, 120), dtype=np.uint8)
+        for i in range(3):
+            cv2.imwrite(str(h.cfg.face_dir / f'{name}_{i}.jpg'), imgs[name])
+    (h.cfg.face_dir / 'ericson_0.jpg').write_bytes((h.cfg.face_dir / 'eric_0.jpg').read_bytes())  # 名字開頭相同，不能被誤刪
+    train(h.cfg)
+    h.recognizer.mapping = read_map(h.cfg.map_file)
+    return h, create_web(h.system).test_client(), imgs
+
+
+def test_delete_member_needs_pin_and_confirm(tmp_path):
+    h, c, _ = delete_client(tmp_path)
+    assert c.post('/api/login', json={'pin': '4321'}).status_code == 200
+    r = c.post('/api/users/eric/delete', json={'confirm': 'eric'})
+    assert r.status_code == 403 and r.get_json()['message'] == '需要輸入 PIN'         # 已登入也不算
+    assert c.post('/api/users/eric/delete', json={'pin': '0000', 'confirm': 'eric'}).status_code == 403
+    assert c.post('/api/users/eric/delete', json={'pin': '4321'}).status_code == 400  # 沒經過警告確認
+    assert c.post('/api/users/eric/delete', json={'pin': '4321', 'confirm': 'amy'}).status_code == 400
+    assert c.post('/api/users/nobody/delete', json={'pin': '4321', 'confirm': 'nobody'}).status_code == 404
+    assert len(list(h.cfg.face_dir.glob('eric_*'))) == 3                               # 上面都沒有刪到
+
+
+def test_delete_member_removes_photos_map_and_model(tmp_path):
+    from smartlock.face import FaceRecognizer, read_map
+    from test_units import WholeImageDetector
+    h, c, imgs = delete_client(tmp_path)
+    c.post('/api/login', json={'pin': '4321'})
+    r = c.post('/api/users/eric/delete', json={'pin': '4321', 'confirm': 'eric'})
+    assert r.status_code == 200 and r.get_json()['message'] == '已刪除 eric'
+    assert not list(h.cfg.face_dir.glob('eric_*'))                                     # 照片刪掉
+    assert (h.cfg.face_dir / 'ericson_0.jpg').exists()                                 # 名字相近的人不受影響
+    assert 'eric' not in {n for n, _ in read_map(h.cfg.map_file).values()}             # 名單移除
+    assert 'eric' not in {n for n, _ in h.recognizer.mapping.values()}                 # 立即生效
+    assert 'member_deleted' in h.kinds()
+    users = {u['name'] for u in c.get('/api/users').get_json()['users']}
+    assert users == {'amy', 'ericson', 'kevin'}
+    # 重新訓練後的模型裡沒有 eric：他的臉不會再被認成 eric
+    rec = FaceRecognizer.load(h.cfg)
+    rec.detector = WholeImageDetector()
+    assert all(r.person != 'eric' for r in rec.identify(imgs['eric']))
+    assert rec.identify(imgs['amy'])[0].person == 'amy'
+
+
+def test_cannot_delete_last_member(tmp_path):
+    h, c, _ = delete_client(tmp_path, people=('eric',))
+    (h.cfg.face_dir / 'ericson_0.jpg').unlink()
+    from smartlock.face import read_map, train
+    train(h.cfg)
+    h.recognizer.mapping = read_map(h.cfg.map_file)
+    c.post('/api/login', json={'pin': '4321'})
+    r = c.post('/api/users/eric/delete', json={'pin': '4321', 'confirm': 'eric'})
+    assert r.status_code == 400 and '至少要保留一位成員' in r.get_json()['message']
+    assert len(list(h.cfg.face_dir.glob('eric_*'))) == 3
+
+
+def test_delete_member_swaps_model_and_map_together(tmp_path):
+    """真的 FaceRecognizer：刪除後編號重排，模型和名單要一起換，剩下的人還是認得出來。"""
+    from smartlock.face import FaceRecognizer, delete_member
+    from test_units import WholeImageDetector
+    h, _, imgs = delete_client(tmp_path)
+    rec = FaceRecognizer.load(h.cfg)
+    rec.detector = WholeImageDetector()
+    assert delete_member(h.cfg, rec, 'amy') == 3
+    assert rec.identify(imgs['kevin'])[0].person == 'kevin'
+    assert rec.identify(imgs['eric'])[0].person == 'eric'
+    assert all(r.person != 'amy' for r in rec.identify(imgs['amy']))

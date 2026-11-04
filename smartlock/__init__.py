@@ -13,4 +13,4 @@
   web       Flask 控制頁
   cli       指令列入口（capture / train / run / test-*）
 """
-__version__ = '2.3.0'
+__version__ = '2.4.0'

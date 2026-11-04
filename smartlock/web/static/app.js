@@ -37,6 +37,7 @@ const Real = {
   settings: (refresh) => http('/api/settings' + (refresh ? '?refresh=1' : '')),
   deleteRecord: (id) => http(`/api/records/${id}`, { method: 'DELETE' }),
   setRole: (name, role, pin) => post(`/api/users/${encodeURIComponent(name)}/role`, { role, pin }),
+  deleteUser: (name, pin) => post(`/api/users/${encodeURIComponent(name)}/delete`, { pin, confirm: name }),
   photo: (name) => `/api/users/${encodeURIComponent(name)}/photo`,
   snapshot: (id) => `/records/${id}/snapshot.jpg`,
   play: (id, speed = 1) => `/records/${id}/play?speed=${speed}&t=${Date.now()}`,
@@ -128,6 +129,14 @@ const Demo = (() => {
       u.role = role;
       push('role_changed', `網頁將 ${name} 改成${role === 'master' ? '主人' : '訪客'}（示範）`);
       return { ok: true, message: `${name} 已改成${role === 'master' ? '主人' : '訪客'}` };
+    },
+    async deleteUser(name, pin) {
+      need();
+      if (pin !== st.pin) return { ok: false, status: 403, message: 'PIN 錯誤' };
+      if (demoUsers.length <= 1) return { ok: false, status: 400, message: '至少要保留一位成員，無法刪除' };
+      demoUsers.splice(demoUsers.findIndex((x) => x.name === name), 1);
+      push('member_deleted', `網頁刪除成員 ${name}（示範）`);
+      return { ok: true, message: `已刪除 ${name}` };
     },
     async deleteRecord(id) { need(); const e = events.find((x) => x.clip && x.clip.id === id); if (e) e.clip = { id, deleted: true }; return { ok: true, message: `已刪除錄影 #${id}` }; },
     photo: () => '',
@@ -448,7 +457,33 @@ function personSheet(i) {
     </div>
     <button class="btn ${to === 'guest' ? 'ghost' : 'lock'}" style="width:100%" onclick="changeRole(${i}, '${to}')">改成${ROLE_NAME[to]}</button>
     <div class="infobox">${to === 'guest' ? '改成訪客後，他到門口只會通知你，不會再自動開門。' : '改成主人後，他用人臉＋手勢就能自動開門。'}
-      每次變更都要輸入 PIN，立即生效。</div>`);
+      每次變更都要輸入 PIN，立即生效。</div>
+    <button class="btn danger" style="width:100%;margin-top:10px" onclick="confirmDelete(${i})">刪除這位成員</button>`);
+}
+// 刪除前先顯示警告（不用 confirm()：LINE 內建瀏覽器可能擋掉），確認後再輸入 PIN
+function confirmDelete(i) {
+  const p = people[i];
+  const last = people.length === 1;
+  const lastMaster = p.role === 'master' && people.filter((x) => x.role === 'master').length === 1;
+  openSheet(`<h3>刪除 ${esc(p.name)}？</h3>
+    <div class="warnbox"><b>此操作無法復原。</b><br>
+      會永久刪除他的 ${p.photos} 張訓練照片，並重新訓練人臉模型；之後他到門口會被當成陌生人。
+      要再加回來，只能在 Pi 上重新拍照（capture）和訓練（train）。</div>
+    ${lastMaster && !last ? '<div class="warnbox">他是最後一位主人，刪除後沒有人能自動開門，只能用手機開。</div>' : ''}
+    ${last ? '<div class="infobox">他是唯一的成員，不能刪除（門鎖至少要有一位成員才能啟動）。</div>' : ''}
+    <div class="acts-2">
+      <button class="btn ghost" onclick="personSheet(${i})">取消</button>
+      <button class="btn danger" ${last ? 'disabled' : ''} onclick="deleteMember(${i})">我了解，刪除</button>
+    </div>`);
+}
+function deleteMember(i) {
+  const p = people[i];
+  askPin({
+    title: `輸入 PIN 以刪除 ${p.name}`,
+    note: '刪除後無法復原',
+    submit: (pin) => Api.deleteUser(p.name, pin).catch((e) => ({ ok: false, message: e.message })),
+    done: (r) => { toast(r.message); renderPeople(); },
+  });
 }
 function changeRole(i, role) {
   const p = people[i];
@@ -468,7 +503,7 @@ const FILTERS = [['全部', null], ['開鎖', ['unlock', 'lock', 'door_failed']]
   ['錄影', ['sentinel_saved']], ['異常', ['door_failed', 'pin_rejected', 'gesture_timeout']]];
 const HIDE_IN_ALL = ['face_passed', 'stranger_detected', 'gesture_cancel', 'info'];   // 重複或太細的事件
 const KIND_CLASS = { unlock: 'unlock', lock: 'lock', guest_detected: 'guest', sentinel_saved: 'sentinel',
-  door_failed: 'alert', pin_rejected: 'alert', gesture_timeout: 'alert', pin_changed: 'lock', role_changed: 'lock' };
+  door_failed: 'alert', pin_rejected: 'alert', gesture_timeout: 'alert', pin_changed: 'lock', role_changed: 'lock', member_deleted: 'alert' };
 let filter = 0, events = [], lastEventId = null;
 
 function dayLabel(t) {
