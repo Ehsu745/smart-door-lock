@@ -53,6 +53,34 @@ def read_map(path: Path) -> Dict[int, Tuple[str, str]]:
     return result
 
 
+ROLES = ('master', 'guest')
+
+
+def write_map(path: Path, mapping: Dict[int, Tuple[str, str]]) -> None:
+    """原子寫入 id_map.txt：先寫暫存檔再取代，寫到一半斷電也不會壞掉。"""
+    tmp = path.with_suffix('.tmp')
+    tmp.write_text(''.join(f'{num}:{name}:{kind}\n' for num, (name, kind) in sorted(mapping.items())), encoding='utf-8')
+    tmp.replace(path)
+
+
+def set_role(cfg: Config, recognizer, name: str, role: str) -> str:
+    """把某人改成 master / guest，立即生效（不用重新訓練：LBPH 只認編號，身分只存在 id_map.txt）。
+    回傳原本的身分。之後重新 train 也會保留這個設定。"""
+    if role not in ROLES:
+        raise ValueError(f'身分只能是 {" / ".join(ROLES)}')
+    mapping = read_map(cfg.map_file)
+    nums = [num for num, (n, _) in mapping.items() if n == name]
+    if not nums:
+        raise KeyError(name)
+    old = mapping[nums[0]][1]
+    for num in nums:
+        mapping[num] = (name, role)
+    write_map(cfg.map_file, mapping)
+    if recognizer is not None:
+        recognizer.mapping = mapping            # 換掉整個 dict：辨識執行緒下一幀就用新身分
+    return old
+
+
 @dataclass
 class FaceResult:
     box: Tuple[int, int, int, int]      # x, y, w, h

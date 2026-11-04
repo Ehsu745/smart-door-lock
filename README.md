@@ -72,6 +72,7 @@ bash deploy/install_service.sh --desktop # 登入桌面後在 Pi 螢幕顯示視
 - 單頁 App，底部四個分頁（門鎖 / 成員 / 紀錄 / 設定），點或左右滑動切換；整頁不捲動，只有紀錄和設定的內容區可以捲。
 - **按住鎖 1 秒才開門**，避免誤觸；「立即上鎖」和「自動解鎖」開關分開。
 - 輸入一次 PIN 後，這支手機在本次啟動期間都不用再輸入；改 PIN 後所有手機都要重新輸入。
+- **例外：變更主人 / 訪客每次都要重新輸入 PIN**，已登入也不算數；改完寫回 `id_map.txt`，下一幀就生效，重新 train 也會保留。
 - PIN 來源：`pin.json`（網頁或 `python app.py set-pin` 設定，PBKDF2 雜湊、權限 600）優先，其次是 `smartlock.env` 的 `CONTROL_PIN`。
 - 沒有 PIN 的手機按開鎖只會跳出鍵盤，不算 PIN 錯誤，不會觸發鎖定。
 - 預覽版面不用接 Pi：直接雙擊 `smartlock/web/templates/index.html`，會自動進入示範模式（示範 PIN 1234）。

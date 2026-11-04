@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 from .. import __version__
+from ..face import ROLES, set_role
 from ..security import PIN_RULE, PinStore
 
 WEB_DIR = Path(__file__).resolve().parent
@@ -303,6 +304,30 @@ def create_web(system, storage=None, line=None):
         out = [{'name': n, 'role': k, 'photos': len(photos_of(n)), 'last_seen': seen.get(n)}
                for n, k in sorted(members().items())]
         return jsonify(users=out)
+
+    @app.route('/api/users/<name>/role', methods=['POST'])
+    def user_role(name):
+        """變更主人 / 訪客。每次都要輸入 PIN：已登入（例如剛在門鎖頁開過門）也不算數。"""
+        need_login()
+        data = request.get_json(silent=True) or {}
+        if not store.required:
+            return jsonify(success=False, message='還沒設定 PIN：先到「設定 → 安全」設定 PIN，才能變更權限'), 400
+        if not data.get('pin'):
+            return jsonify(success=False, message='需要輸入 PIN'), 403
+        if not pin_ok(data.get('pin')):
+            return deny()
+        role = data.get('role')
+        if role not in ROLES:
+            return jsonify(success=False, message='身分只能是主人或訪客'), 400
+        if name not in members():
+            abort(404)
+        old = set_role(cfg, system.recognizer, name, role)
+        label = {'master': '主人', 'guest': '訪客'}
+        if old != role:
+            system.emit('role_changed', f'網頁將 {name} 從{label.get(old, old)}改成{label[role]}（{request.remote_addr}）',
+                        name=name, role=role, old=old, remote=request.remote_addr)
+        masters = sum(1 for k in members().values() if k == 'master')
+        return jsonify(success=True, message=f'{name} 已改成{label[role]}', masters=masters)
 
     @app.route('/api/users/<name>/photo')
     def user_photo(name):

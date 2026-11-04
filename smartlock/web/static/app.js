@@ -36,6 +36,7 @@ const Real = {
   events: async (kinds, before) => (await http(`/api/events?limit=60${kinds ? `&kinds=${kinds.join(',')}` : ''}${before ? `&before=${before}` : ''}`)).events,
   settings: (refresh) => http('/api/settings' + (refresh ? '?refresh=1' : '')),
   deleteRecord: (id) => http(`/api/records/${id}`, { method: 'DELETE' }),
+  setRole: (name, role, pin) => post(`/api/users/${encodeURIComponent(name)}/role`, { role, pin }),
   photo: (name) => `/api/users/${encodeURIComponent(name)}/photo`,
   snapshot: (id) => `/records/${id}/snapshot.jpg`,
   play: (id, speed = 1) => `/records/${id}/play?speed=${speed}&t=${Date.now()}`,
@@ -61,6 +62,8 @@ const Demo = (() => {
     ev(9 * day, 'sentinel_saved', '哨兵：錄影 #3 已儲存（14 秒）', { clip: { id: 3, deleted: true } }),
     ev(2 * day + 4000, 'door_failed', '手動解鎖（手機） → UNLOCK 失敗：Arduino 沒有回應'),
   ];
+  const demoUsers = [{ name: 'eric', role: 'master', photos: 30, last_seen: t0 - 128 }, { name: 'yang', role: 'master', photos: 30, last_seen: t0 - day - 560 },
+    { name: 'amy', role: 'guest', photos: 30, last_seen: t0 - 3600 }, { name: 'kevin', role: 'guest', photos: 24, last_seen: null }];
   const push = (kind, text) => events.unshift({ id: 1000 + events.length, time: now(), kind, text, data: {} });
   const authed = () => st.loggedIn;
   const need = () => { if (!authed()) throw new AuthError('需要輸入 PIN'); };
@@ -102,11 +105,7 @@ const Demo = (() => {
       st.pin = pin; st.loggedIn = true; push('pin_changed', '網頁變更 PIN（示範）');
       return { ok: true, message: 'PIN 已變更，其他手機需要重新輸入' };
     },
-    async users() {
-      need();
-      return [{ name: 'eric', role: 'master', photos: 30, last_seen: t0 - 128 }, { name: 'yang', role: 'master', photos: 30, last_seen: t0 - day - 560 },
-        { name: 'amy', role: 'guest', photos: 30, last_seen: t0 - 3600 }, { name: 'kevin', role: 'guest', photos: 24, last_seen: null }];
-    },
+    async users() { need(); return demoUsers.map((u) => ({ ...u })); },
     async events(kinds, before) {
       need();
       return events.filter((e) => (!kinds || kinds.includes(e.kind)) && (!before || e.id < before)).sort((a, b) => b.time - a.time);
@@ -121,6 +120,14 @@ const Demo = (() => {
           rule: '人臉＋手勢（讚(Thumb_Up) / YA(Victory)）', unlock_seconds: 8, version: '2.2.0（示範）' },
         security: { pin_required: !!st.pin, source: 'file' },
       };
+    },
+    async setRole(name, role, pin) {
+      need();
+      if (pin !== st.pin) return { ok: false, status: 403, message: 'PIN 錯誤' };
+      const u = demoUsers.find((x) => x.name === name);
+      u.role = role;
+      push('role_changed', `網頁將 ${name} 改成${role === 'master' ? '主人' : '訪客'}（示範）`);
+      return { ok: true, message: `${name} 已改成${role === 'master' ? '主人' : '訪客'}` };
     },
     async deleteRecord(id) { need(); const e = events.find((x) => x.clip && x.clip.id === id); if (e) e.clip = { id, deleted: true }; return { ok: true, message: `已刪除錄影 #${id}` }; },
     photo: () => '',
@@ -427,18 +434,31 @@ function renderPeople() {
       `<div class="hint-box">新增成員要在 Pi 上執行 <code>python app.py capture 名字</code>，再 <code>python app.py train</code>，然後重新啟動門鎖。</div>`;
   });
 }
+const ROLE_NAME = { master: '主人', guest: '訪客' };
 function personSheet(i) {
   const p = people[i];
+  const to = p.role === 'master' ? 'guest' : 'master';
   openSheet(`
     <div class="detail-head">${avatar(p)}
-      <div><h3 style="margin:0">${esc(p.name)}</h3><span class="role ${p.role}">${p.role === 'master' ? '主人' : '訪客'}</span></div></div>
+      <div><h3 style="margin:0">${esc(p.name)}</h3><span class="role ${p.role}">${ROLE_NAME[p.role]}</span></div></div>
     <div class="sec" style="padding:0 14px">
       <div class="row"><span>開門方式</span><span class="v">${p.role === 'master' ? '人臉＋手勢自動開門' : '只通知，不自動開門'}</span></div>
       <div class="row"><span>訓練照片</span><span class="v">${p.photos} 張</span></div>
       <div class="row"><span>最近出現</span><span class="v">${ago(p.last_seen)}</span></div>
     </div>
-    <div class="infobox">要改成${p.role === 'master' ? '訪客' : '主人'}：在 Pi 上編輯 <code>id_map.txt</code> 這個人那一行最後的
-      <code>${p.role}</code>，改成 <code>${p.role === 'master' ? 'guest' : 'master'}</code>，再重新啟動門鎖。</div>`);
+    <button class="btn ${to === 'guest' ? 'ghost' : 'lock'}" style="width:100%" onclick="changeRole(${i}, '${to}')">改成${ROLE_NAME[to]}</button>
+    <div class="infobox">${to === 'guest' ? '改成訪客後，他到門口只會通知你，不會再自動開門。' : '改成主人後，他用人臉＋手勢就能自動開門。'}
+      每次變更都要輸入 PIN，立即生效。</div>`);
+}
+function changeRole(i, role) {
+  const p = people[i];
+  const lastMaster = role === 'guest' && people.filter((x) => x.role === 'master').length === 1;
+  askPin({
+    title: `輸入 PIN 把 ${p.name} 改成${ROLE_NAME[role]}`,
+    note: lastMaster ? '他是最後一位主人，改完之後沒有人能自動開門' : '',
+    submit: (pin) => Api.setRole(p.name, role, pin).catch((e) => ({ ok: false, message: e.message })),
+    done: (r) => { toast(r.message); renderPeople(); },
+  });
 }
 
 /* =========================================================
@@ -448,7 +468,7 @@ const FILTERS = [['全部', null], ['開鎖', ['unlock', 'lock', 'door_failed']]
   ['錄影', ['sentinel_saved']], ['異常', ['door_failed', 'pin_rejected', 'gesture_timeout']]];
 const HIDE_IN_ALL = ['face_passed', 'stranger_detected', 'gesture_cancel', 'info'];   // 重複或太細的事件
 const KIND_CLASS = { unlock: 'unlock', lock: 'lock', guest_detected: 'guest', sentinel_saved: 'sentinel',
-  door_failed: 'alert', pin_rejected: 'alert', gesture_timeout: 'alert', pin_changed: 'lock' };
+  door_failed: 'alert', pin_rejected: 'alert', gesture_timeout: 'alert', pin_changed: 'lock', role_changed: 'lock' };
 let filter = 0, events = [], lastEventId = null;
 
 function dayLabel(t) {

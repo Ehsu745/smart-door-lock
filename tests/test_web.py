@@ -280,3 +280,70 @@ def test_health():
     _, c = client()
     d = c.get('/api/health').get_json()
     assert d['ok'] and d['streams'] == 0 and d['threads'] >= 1
+
+
+# ==========================================
+# 變更主人 / 訪客：每次都要 PIN，已登入也一樣
+# ==========================================
+def role_client(tmp_path, pin='4321'):
+    from smartlock.face import read_map
+    h = Harness(Config(base=tmp_path, control_pin=pin))
+    (tmp_path / 'id_map.txt').write_text('0:eric:master\n1:amy:guest\n', encoding='utf-8')
+    h.recognizer.mapping = read_map(tmp_path / 'id_map.txt')
+    return h, create_web(h.system).test_client()
+
+
+def test_role_change_needs_pin_every_time(tmp_path):
+    from smartlock.face import read_map
+    h, c = role_client(tmp_path)
+    assert c.post('/api/login', json={'pin': '4321'}).status_code == 200            # 已登入（例如剛開過門）
+    r = c.post('/api/users/eric/role', json={'role': 'guest'})
+    assert r.status_code == 403 and r.get_json()['message'] == '需要輸入 PIN'      # 登入不算數
+    assert c.post('/api/users/eric/role', json={'role': 'guest', 'pin': '0000'}).status_code == 403
+    r = c.post('/api/users/eric/role', json={'role': 'guest', 'pin': '4321'})
+    assert r.status_code == 200 and r.get_json()['masters'] == 0
+    assert read_map(tmp_path / 'id_map.txt')[0] == ('eric', 'guest')                # 寫回檔案
+    assert h.recognizer.mapping[0] == ('eric', 'guest')                             # 立即生效
+    assert 'role_changed' in h.kinds()
+    r = c.post('/api/users/eric/role', json={'role': 'master'})                      # 下一次還是要 PIN
+    assert r.status_code == 403
+
+
+def test_role_change_takes_effect_on_next_frame(tmp_path):
+    from conftest import face
+    h, c = role_client(tmp_path)
+    c.post('/api/login', json={'pin': '4321'})
+    c.post('/api/users/eric/role', json={'role': 'guest', 'pin': '4321'})
+    # 辨識器回傳的身分來自 mapping；改成 guest 後同一張臉只會通知、不會開鎖
+    kind = h.recognizer.mapping[0][1]
+    h.step(3.0, [face('eric', kind, label=0)], 'Thumb_Up')
+    assert h.unlocks == 0 and 'guest_detected' in h.kinds()
+
+
+def test_role_change_validation(tmp_path):
+    h, c = role_client(tmp_path)
+    c.post('/api/login', json={'pin': '4321'})
+    assert c.post('/api/users/eric/role', json={'role': 'admin', 'pin': '4321'}).status_code == 400
+    assert c.post('/api/users/nobody/role', json={'role': 'guest', 'pin': '4321'}).status_code == 404
+
+
+def test_role_change_requires_pin_configured(tmp_path):
+    h, c = role_client(tmp_path, pin='')
+    r = c.post('/api/users/eric/role', json={'role': 'guest', 'pin': '1234'})
+    assert r.status_code == 400 and '設定 PIN' in r.get_json()['message']
+
+
+def test_role_survives_retrain(tmp_path):
+    import cv2
+    from smartlock.face import FaceRecognizer, read_map, set_role, train
+    cfg = Config(base=tmp_path)
+    cfg.face_dir.mkdir()
+    rng = np.random.default_rng(1)
+    for name in ('eric', 'amy'):
+        img = rng.integers(0, 255, (120, 120), dtype=np.uint8)
+        for i in range(3):
+            cv2.imwrite(str(cfg.face_dir / f'{name}_{i}.jpg'), img)
+    train(cfg)
+    set_role(cfg, None, 'eric', 'guest')
+    train(cfg)
+    assert ('eric', 'guest') in read_map(cfg.map_file).values()
