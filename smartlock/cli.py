@@ -13,6 +13,7 @@
   python app.py records         哨兵錄影清單、容量與最近的事件紀錄
   python app.py cleanup         立即執行容量管理（刪除過期 / 超量的錄影）
   python app.py set-pin         設定或重設網頁 PIN（忘記 PIN 時用）
+  python app.py test-line       查 LINE 額度，確認後送一則測試訊息
 
 設定會自動從專案資料夾的 smartlock.env 讀取；指令前面加的環境變數優先。
 （也可以用 python -m smartlock <指令>）
@@ -39,7 +40,7 @@ from .face import FaceRecognizer, capture, load_detector, train
 from .gesture import GestureDetector, draw_hand
 from .config import PROJECT_ROOT
 from .qr import control_url, print_qr
-from .line import LineClient
+from .line import LineClient, LineError, LineNotifier
 from .security import ENV_FILE, PinStore, load_env_file
 from .sentinel import Sentinel
 from .storage import Storage
@@ -118,7 +119,11 @@ def run(cfg: Config):
     worker.start()
     threading.Thread(target=arduino.watchdog, args=(system.stop,), daemon=True, name='arduino-watchdog').start()
     line = LineClient(cfg.line_token) if cfg.line_token else None
-    web = create_web(system, storage, line)
+    notifier = None
+    if line is not None and cfg.line_notify:
+        notifier = LineNotifier(line, system.bus, user_id=cfg.line_user_id, cooldown=cfg.line_cooldown)
+        log.info('LINE 通知：%s（訪客、陌生人錄影、開鎖失敗）', '只推給 LINE_USER_ID' if cfg.line_user_id else '廣播給所有好友')
+    web = create_web(system, storage, line, notifier)
     threading.Thread(target=serve_web, args=(web, cfg.web_port, system.stop), daemon=True, name='web').start()
 
     url = control_url(cfg)
@@ -142,6 +147,8 @@ def run(cfg: Config):
         worker.join(timeout=3)
         if sentinel is not None:
             sentinel.close(system.clock())              # 把錄到一半的影片收尾
+        if notifier is not None:
+            notifier.close()                            # 把排隊中的通知送完
         storage.close()
         arduino.send('LOCK')
         arduino.close()
@@ -296,6 +303,26 @@ def set_pin(cfg: Config):
     print(f'PIN 已更新，存在 {cfg.pin_file}（只存雜湊）。正在執行的門鎖系統會自動套用，用舊 PIN 登入的手機要重新輸入。')
 
 
+def test_line(cfg: Config):
+    """查 LINE 額度，確認後送一則測試訊息。"""
+    if not cfg.line_token:
+        raise ValueError('smartlock.env 還沒有 LINE_CHANNEL_TOKEN')
+    client = LineClient(cfg.line_token)
+    q = client.quota(refresh=True)
+    if q.get('error'):
+        raise ValueError(q['error'])
+    left = '不限' if q.get('limit') is None else f'{q["left"]} / {q["limit"]}'
+    target = '只推給 LINE_USER_ID' if cfg.line_user_id else '廣播給所有好友（每位好友各算一則）'
+    print(f'token 有效。本月剩餘額度：{left}，已用 {q.get("used")}；發送方式：{target}')
+    if input('送一則測試訊息？(y/N) ').strip().lower() != 'y':
+        return
+    try:
+        client.send('【智慧門鎖】測試訊息：LINE 通知設定成功。', cfg.line_user_id)
+    except LineError as exc:
+        raise ValueError(f'發送失敗：{exc}') from exc
+    print('已送出，請看 LINE。')
+
+
 def menu(cfg: Config):
     while True:
         print('\n1. 採集人臉\n2. 訓練模型\n3. 啟動門鎖系統\n4. 測試 Arduino\n5. 離開'
@@ -336,7 +363,7 @@ def main(argv=None) -> int:
         cfg = Config.from_env()
         commands = {'train': train, 'run': run, 'test-arduino': test_arduino,
                     'test-camera': test_camera, 'test-gesture': test_gesture,
-                    'records': show_records, 'cleanup': cleanup, 'set-pin': set_pin}
+                    'records': show_records, 'cleanup': cleanup, 'set-pin': set_pin, 'test-line': test_line}
         if cfg.enable_qr:
             commands['qr'] = show_qr
         if not argv:

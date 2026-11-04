@@ -19,14 +19,14 @@ Pi Camera 3 NoIR ─▶ Raspberry Pi 5 (4GB) ──USB 序列埠──▶ Arduin
 - `guest` 永遠不自動開鎖，只通知；陌生人逗留 ≥ 5 秒 → 哨兵錄影
 - Arduino：送小寫 `unlock` / `lock` + `\n`，sketch 回 `Unlocked: ...` / `Locked`，8 秒後自動上鎖
 
-## 2. 目前狀態（v2.4.0）
+## 2. 目前狀態（v2.5.0）
 
 | 優化規劃項目 | 狀態 |
 |---|---|
 | 1. 模組化 + 狀態機測試 | ✅ |
 | 2. systemd 背景服務 | ✅（`deploy/`） |
 | 3. 哨兵錄影 + SQLite + 控制頁 | ✅ |
-| 4. LINE 文字通知 | ⏳ **下一步**（額度查詢已完成，發送還沒做） |
+| 4. LINE 文字通知 | ✅ v2.5（`LineNotifier`；token 已驗證有效，真實發送待使用者確認後用 `test-line` 測） |
 | 5. 軟體移動偵測 + 效能量測 | ⬜ |
 
 額外完成：手機單頁 App（門鎖 / 成員 / 紀錄 / 設定）、PIN 雜湊與網頁變更、網頁變更主人/訪客、網頁刪除成員（v2.4：警告無法復原 → PIN → 刪照片並重新訓練）、串流連線數修正（網站「當掉」問題）、依手機尺寸排版。
@@ -37,9 +37,9 @@ Pi Camera 3 NoIR ─▶ Raspberry Pi 5 (4GB) ──USB 序列埠──▶ Arduin
 
 ```bash
 source .venv/bin/activate
-python -m pytest -q                 # 108 個測試，不需要相機或 Arduino（Mac：104 passed, 4 skipped，序列埠 pty 測試只在 Linux 跑）
+python -m pytest -q                 # 119 個測試，不需要相機或 Arduino（Mac：115 passed, 4 skipped，序列埠 pty 測試只在 Linux 跑）
 python app.py run --sim             # 完整系統，用模擬 Arduino
-python app.py records | cleanup | set-pin | test-camera | test-gesture | test-arduino
+python app.py records | cleanup | set-pin | test-camera | test-gesture | test-arduino | test-line
 # 只看版面（不用 Pi）：直接用瀏覽器開 smartlock/web/templates/index.html → 自動示範模式，PIN 1234
 ```
 
@@ -58,7 +58,7 @@ smartlock/
   gesture.py / arduino.py / camera.py / display.py / qr.py
   sentinel.py          哨兵：預錄緩衝、固定幀率取樣（迴圈慢時補幀）、背景寫檔 MJPG .avi
   storage.py           SQLite（records / events / presence）+ 容量管理（天數 / 總量 / SD 剩餘）
-  line.py              LINE 額度查詢（10 分鐘快取）；之後在這裡加發送
+  line.py              LineClient（額度 10 分鐘快取、send：push/broadcast + retry key）、LineNotifier（訂閱事件、背景佇列、冷卻、低額度只發重要）
   web/server.py        Flask API + PinGuard（5 次錯鎖 60 秒）+ StreamRegistry
   web/templates/index.html, web/static/app.js, app.css, qrcode.min.js（MIT，內嵌）
   cli.py               指令、run() 組裝所有元件
@@ -82,18 +82,19 @@ docs/                  01 居家助理未來規劃（概念階段）、02 智慧
 - **變更主人/訪客每次都要 PIN，已登入也不算**（使用者明確要求）；錯誤鎖定仍保留
 - **刪除成員**同樣每次都要 PIN，而且前端要先顯示「此操作無法復原」警告（使用者明確要求）；API 需帶 `confirm=<名字>`；不能刪最後一位成員。`face.delete_member` 先移出名單 → 刪照片 → 重新 train → `FaceRecognizer.swap()` 同時換模型和名單（編號會重排）
 
-## 5. 下一步：LINE 通知（規劃已定）
+## 5. LINE 通知（v2.5 已實作，以下為規格）
 
 - 帳號已建好：官方帳號 `@your_line_id`，輕用量方案（每月 200 則，**廣播按好友人數計算**）
-- 使用者還沒拿到 token、還沒做 curl 測試。使用者的 Business ID 沒連動 LINE 帳號，所以 Console 看不到 Your user ID → 先用 **broadcast**；有 `LINE_USER_ID` 時改用 push
+- token 已放在 Mac 開發資料夾的 `smartlock.env`（0600，gitignore），2026-11-04 用 quota 驗證有效（200 則、已用 0）。使用者的 Business ID 沒連動 LINE 帳號，所以 Console 看不到 Your user ID → 先用 **broadcast**；有 `LINE_USER_ID` 時改用 push
 - 設定放 `smartlock.env`：`LINE_CHANNEL_TOKEN`、`LINE_BASIC_ID`、`LINE_USER_ID`（**token 絕不寫進程式或 git**）
 - 做法：`LineNotifier` 訂閱事件
   - `stranger_detected`：只在 `data['notify']` 為 True 時發（哨兵已做 5 分鐘冷卻）
   - `guest_detected`、`door_failed`
-  - 發送後呼叫 `LineClient.count_sent(n)`；額度剩 20 以下只發重要的（door_failed、guest）
+  - push 後 `count_sent(1)`；broadcast 用量 = 好友數，改成讓額度快取失效下次重查；額度剩 20 以下只發重要的（door_failed、guest），0 則全停
+  - 訪客（依名字）與 door_failed 有 `LINE_COOLDOWN`（預設 300 秒）；陌生人沿用哨兵的 notify 冷卻
   - 在背景執行緒發送，不能卡住辨識迴圈；失敗要記錄但不能讓系統掛掉
 - **通知內容不放開鎖連結**；圖片需要公開 HTTPS 網址，先只發文字
-- 測試：用假的 opener（參考 `tests/test_security.py` 的 FakeResp），不要真的打 LINE API
+- 測試在 `tests/test_line.py`：假的 opener（FakeLine），不會真的打 LINE API
 
 之後：軟體移動偵測（低解析度幀差，沒動靜時跳過辨識），改前改後用 `htop`、`vcgencmd measure_temp` 量 CPU 與溫度，放進報告。
 

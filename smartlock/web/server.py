@@ -127,7 +127,7 @@ class _StaticPin:
         return hmac.compare_digest(str(pin or ''), self.pin)
 
 
-def create_web(system, storage=None, line=None):
+def create_web(system, storage=None, line=None, notifier=None):
     from flask import (Flask, Response, abort, jsonify, redirect, request, send_file, send_from_directory, session)
 
     cfg = system.cfg
@@ -456,7 +456,8 @@ def create_web(system, storage=None, line=None):
     def settings():
         need_login()
         line_info = line.quota(refresh=request.args.get('refresh') == '1') if line else {'configured': bool(cfg.line_token)}
-        line_info = dict(line_info, basic_id=cfg.line_basic_id, target='user' if cfg.line_user_id else 'broadcast')
+        line_info = dict(line_info, basic_id=cfg.line_basic_id, target='user' if cfg.line_user_id else 'broadcast',
+                         notify=notifier.status() if notifier is not None else None)
         snap = system.snapshot()
         return jsonify(
             line=line_info,

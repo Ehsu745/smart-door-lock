@@ -235,7 +235,7 @@ def test_settings(tmp_path):
     h.system.info = {'camera': 'Pi 相機（rpicam）'}
     c = create_web(h.system, st, None).test_client()
     d = c.get('/api/settings').get_json()
-    assert d['line'] == {'configured': False, 'basic_id': '@your_line_id', 'target': 'broadcast'}
+    assert d['line'] == {'configured': False, 'basic_id': '@your_line_id', 'target': 'broadcast', 'notify': None}
     assert d['storage']['limit_mb'] == 2048 and d['system']['camera'] == 'Pi 相機（rpicam）'
     assert d['security'] == {'pin_required': False, 'source': 'none'}
 

@@ -78,17 +78,33 @@ bash deploy/install_service.sh --desktop # 登入桌面後在 Pi 螢幕顯示視
 - 沒有 PIN 的手機按開鎖只會跳出鍵盤，不算 PIN 錯誤，不會觸發鎖定。
 - 預覽版面不用接 Pi：直接雙擊 `smartlock/web/templates/index.html`，會自動進入示範模式（示範 PIN 1234）。
 
+## LINE 通知
+
+1. 在 `smartlock.env` 加上 `LINE_CHANNEL_TOKEN=`（Developers Console → Messaging API）和 `LINE_BASIC_ID=@你的帳號`
+2. `python app.py test-line`：確認 token 有效、看剩餘額度，再選擇是否送一則測試訊息
+3. 手機「設定」分頁 →「加入通知好友」掃 QR，重新啟動門鎖後就會收到通知
+
+| 通知 | 什麼時候發 |
+|---|---|
+| 訪客在門口 | guest 被認出時；同一位訪客 5 分鐘內只發一次（`LINE_COOLDOWN`） |
+| 陌生人錄影 | 哨兵開始錄影時；兩次最少間隔 5 分鐘（`SENTINEL_COOLDOWN`） |
+| 開鎖 / 上鎖失敗 | Arduino 沒回應或指令失敗；5 分鐘內只發一次 |
+
+- 沒設 `LINE_USER_ID` 就**廣播給所有好友，每位好友各算一則**（輕用量方案每月 200 則）；有設就只 push 給那個人。
+- 額度剩 20 則以下只發「訪客」和「開鎖失敗」；用完就暫停。通知只有文字，**不放開鎖連結**。
+- 在背景執行緒發送，LINE 連不上不影響門鎖；失敗原因會顯示在手機「設定」的 LINE 區塊。
+
 ## 程式結構
 
 ```
 app.py                 入口（python app.py <指令>）
 smartlock/
   config.py            所有設定（環境變數）集中一處
-  events.py            事件匯流排：開鎖、訪客、失敗… 都發事件，錄影、紀錄、之後的 LINE 通知各自訂閱
+  events.py            事件匯流排：開鎖、訪客、失敗… 都發事件，錄影、紀錄、LINE 通知各自訂閱
   sentinel.py          哨兵：陌生人逗留自動錄影（預錄緩衝、背景寫檔）
   storage.py           SQLite 紀錄 + SD 卡容量管理 + 成員最近出現時間
   security.py          PIN 雜湊儲存、smartlock.env 載入
-  line.py              LINE 額度查詢（通知發送下一步加入）
+  line.py              LINE 額度查詢 + 通知（訪客、陌生人錄影、開鎖失敗；背景發送）
   door.py              狀態機（人臉 → 手勢 → 開鎖），不碰硬體，可單獨測試
   face.py              人臉偵測、辨識、採集、訓練
   gesture.py           MediaPipe 手勢（含備援規則）
@@ -98,7 +114,7 @@ smartlock/
   qr.py                控制頁 QR code
   web/                 Flask API + 單頁 App（templates/index.html、static/app.js、app.css）
   cli.py               指令列與選單
-tests/                 108 個自動測試，不需要相機或 Arduino
+tests/                 119 個自動測試，不需要相機或 Arduino
 deploy/                systemd 服務與安裝腳本
 arduino/door_lock/     學弟的 Arduino sketch
 ```

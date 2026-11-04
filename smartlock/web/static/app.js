@@ -114,7 +114,8 @@ const Demo = (() => {
     async settings() {
       need();
       return {
-        line: { configured: true, limit: 200, used: 13, left: 187, reset: '12/1', basic_id: '@your_line_id', target: 'broadcast' },
+        line: { configured: true, limit: 200, used: 13, left: 187, reset: '12/1', basic_id: '@your_line_id', target: 'broadcast',
+          notify: { sent: 3, last_sent: '今天 15:02', last_text: '【智慧門鎖】15:02 訪客 amy 在門口。要開門請到手機控制頁操作。', last_error: null } },
         storage: { count: 23, used_mb: 312, limit_mb: 2048, keep_days: 7, disk_free_mb: 18640, disk_total_mb: 29000 },
         sentinel: { enabled: true, trigger: 5, stop: 5, max: 60, cooldown: 300 },
         system: { arduino: '模擬模式（未接 Arduino）', connected: true, camera: 'Pi 相機（rpicam）', gesture: 'MediaPipe Gesture Recognizer',
@@ -602,14 +603,19 @@ function lineSection(l) {
       ${l.basic_id ? '' : '和 <code>LINE_BASIC_ID=@你的帳號</code>'}，再重新啟動門鎖。</div>${qr}</div>`;
   }
   if (l.error) return `<div class="sec"><h3>LINE 通知</h3><div class="warnbox">${esc(l.error)}</div>${qr}</div>`;
-  const limited = l.limit != null;
+  const limited = l.limit != null, n = l.notify;
+  const notifyRow = !n ? '<div class="row"><span>自動通知</span><span class="v">關閉（LINE_NOTIFY=0）</span></div>'
+    : `<div class="row note"><span>最近一則通知<small>${n.last_text ? esc(n.last_text.replace('【智慧門鎖】', '')) : '啟動後還沒發過'}</small></span>
+        <span class="v">${n.last_sent || '—'}</span></div>`;
   return `<div class="sec"><h3>LINE 通知</h3>
+    ${n && n.last_error ? `<div class="warnbox">上一則通知沒送出：${esc(n.last_error)}</div>` : ''}
     <div class="meter-block">
       <div class="meter-head"><span class="big">${limited ? l.left : '不限'} <small>則可用</small></span>
         <span class="meter-note">${limited ? `本月已用 ${l.used} / ${l.limit}` : `本月已用 ${l.used}`}</span></div>
       ${limited ? meter(l.used, l.limit) : ''}
-      <div class="meter-note">${l.reset} 重置。${l.target === 'broadcast' ? '目前發給所有好友，每位好友各算一則。' : '目前只發給指定的一個人。'}</div>
-    </div>${qr}</div>`;
+      <div class="meter-note">${l.reset} 重置。${l.target === 'broadcast' ? '目前發給所有好友，每位好友各算一則。' : '目前只發給指定的一個人。'}
+        額度剩 20 則以下只發訪客和開鎖失敗。</div>
+    </div>${notifyRow}${qr}</div>`;
 }
 function renderSettings(refresh = false) {
   return guarded($('settings'), async () => {

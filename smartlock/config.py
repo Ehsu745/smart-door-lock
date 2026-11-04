@@ -90,6 +90,8 @@ class Config:
     line_token: str = ''                          # Channel access token（放 smartlock.env，不要寫進程式）
     line_basic_id: str = ''                       # 官方帳號 ID，例如 @your_line_id（加好友 QR 用）
     line_user_id: str = ''                        # 有設定就只推給這個人，沒設定就廣播給所有好友
+    line_notify: bool = True                      # 有 token 時是否發通知（0 = 只顯示額度）
+    line_cooldown: float = 300.0                  # 同一位訪客 / 開鎖失敗，幾秒內只通知一次
 
     # ---- 路徑 ----
     @property
@@ -169,4 +171,6 @@ class Config:
             line_token=env.get('LINE_CHANNEL_TOKEN', ''),
             line_basic_id=env.get('LINE_BASIC_ID', ''),
             line_user_id=env.get('LINE_USER_ID', ''),
+            line_notify=env.get('LINE_NOTIFY', '1') != '0',
+            line_cooldown=float(env.get('LINE_COOLDOWN', 300)),
         )
