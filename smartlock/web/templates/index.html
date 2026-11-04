@@ -26,15 +26,12 @@
         <div class="cam">
           <canvas id="demoCam" width="480" height="360" hidden></canvas>
           <img id="live" alt="門口即時影像" hidden>
-          <div class="who" id="who">無人</div>
           <div class="rec" id="rec" hidden><i></i>REC</div>
         </div>
-        <div class="notice guest" id="guestNote" hidden>
-          <div><b id="guestName"></b> 在門口<br><span style="font-size:12px">訪客不會自動開門，要讓他進來就按住鎖開門</span></div>
-        </div>
-        <div class="notice gesture" id="gestureNote" hidden>
-          <div><b id="gestureName"></b> 人臉通過<br><span style="font-size:12px" id="gestureHint"></span></div>
-          <span class="count" id="gestureCount"></span>
+        <!-- 狀態列：固定高度，出現訪客 / 等手勢時只換內容，不推動下面的鎖 -->
+        <div class="strip" id="strip" data-kind="idle" aria-live="polite">
+          <div class="strip-main"><b id="stripTitle">門口：無人</b><span id="stripSub"></span></div>
+          <span class="count" id="stripCount"></span>
         </div>
 
         <div class="lockzone">

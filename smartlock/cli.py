@@ -64,6 +64,23 @@ def check_port_free(port: int):
             raise RuntimeError(f'埠 {port} 已被使用：先關掉其他正在跑的程式（pkill -f "app.py run"）')
 
 
+def serve_web(web, port, stop):
+    """網頁伺服器：卡住的連線 20 秒後自動斷開；萬一伺服器本身出錯就記錄下來並重新啟動，不需要重開整個程式。"""
+    from werkzeug.serving import WSGIRequestHandler
+    from .web.server import STREAM_SEND_TIMEOUT
+
+    class Handler(WSGIRequestHandler):
+        timeout = STREAM_SEND_TIMEOUT              # 手機休眠或離線時，送不出去的串流不會永遠佔住執行緒
+
+    while not stop.is_set():
+        try:
+            web.run(host='0.0.0.0', port=port, threaded=True, use_reloader=False, request_handler=Handler)
+        except Exception:
+            log.exception('網頁伺服器錯誤，3 秒後重新啟動')
+        if stop.wait(3):
+            break
+
+
 def run(cfg: Config):
     recognizer = FaceRecognizer.load(cfg)
     log.info('已載入 %d 位使用者：%s', len(recognizer.mapping),
@@ -102,8 +119,7 @@ def run(cfg: Config):
     threading.Thread(target=arduino.watchdog, args=(system.stop,), daemon=True, name='arduino-watchdog').start()
     line = LineClient(cfg.line_token) if cfg.line_token else None
     web = create_web(system, storage, line)
-    threading.Thread(target=lambda: web.run(host='0.0.0.0', port=cfg.web_port, threaded=True, use_reloader=False),
-                     daemon=True, name='web').start()
+    threading.Thread(target=serve_web, args=(web, cfg.web_port, system.stop), daemon=True, name='web').start()
 
     url = control_url(cfg)
     log.info('網頁控制台：%s（本機也可用 http://localhost:%d）；Ctrl+C 結束', url, cfg.web_port)

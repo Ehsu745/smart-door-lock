@@ -224,26 +224,34 @@ function renderDoor(d) {
     timerRing.style.opacity = 0;
     dial.setAttribute('aria-label', '按住解鎖');
   }
-  setText('who', whoLabel(d));
   const rec = d.sentinel?.state === 'recording';
   show('rec', rec);
   if (rec && !last.rec && page !== 2) $('histDot').hidden = false;
   last.rec = rec;
-
-  show('guestNote', !!d.visitor && !d.unlocked);
-  if (d.visitor) setText('guestName', `訪客 ${d.visitor}`);
-  const g = d.phase === 'gesture' && !d.unlocked;
-  show('gestureNote', g);
-  if (g) {
-    setText('gestureName', d.target || '');
-    setText('gestureHint', `請比出手勢：${(d.allowed || []).join(' 或 ')}`);
-    setText('gestureCount', String(Math.ceil(d.countdown || 0)));
-  }
+  renderStrip(d, rec);
   const t = $('autoToggle');
   if (t.getAttribute('aria-checked') !== String(d.auto)) t.setAttribute('aria-checked', String(d.auto));
   setText('autoSub', d.auto ? (d.require_gesture ? '人臉＋手勢' : '只需人臉') : '已關閉，只能用手機開');
   $('conn').classList.toggle('off', !d.connected);
   setText('connText', d.connected ? (DEMO ? 'Arduino 模擬' : 'Arduino 已連線') : 'Arduino 未連線');
+}
+
+// 門口狀態列：同一個位置依優先順序顯示（等手勢 > 訪客 > 哨兵 > 誰在門口）
+function renderStrip(d, rec) {
+  let kind = 'idle', title = `門口：${whoLabel(d)}`, sub = '', count = '';
+  if (d.phase === 'gesture' && !d.unlocked) {
+    kind = 'gesture'; title = `${d.target || ''} 人臉通過`;
+    sub = `請比出手勢：${(d.allowed || []).join(' 或 ')}`; count = String(Math.ceil(d.countdown || 0));
+  } else if (d.visitor && !d.unlocked) {
+    kind = 'guest'; title = `訪客 ${d.visitor} 在門口`; sub = '訪客不會自動開門，要讓他進來就按住鎖';
+  } else if (rec) {
+    kind = 'alert'; sub = `陌生人逗留，哨兵錄影中 ${d.sentinel.seconds ?? ''} 秒`;
+  } else if (d.sentinel?.state === 'watching') {
+    sub = `陌生人停留 ${Math.round(d.sentinel.seconds || 0)} 秒`;
+  }
+  const strip = $('strip');
+  if (strip.dataset.kind !== kind) strip.dataset.kind = kind;
+  setText('stripTitle', title); setText('stripSub', sub); setText('stripCount', count);
 }
 
 // 按住解鎖：外圈填滿才送出，放開就取消
@@ -314,15 +322,30 @@ function demoCam() {
     g.strokeStyle = { master: '#55d38f', guest: '#c79be3' }[d.category] || '#ff6a4d'; g.lineWidth = 3; g.strokeRect(x - 10, 102, 80, 96);
   }
   g.fillStyle = 'rgba(255,255,255,.8)'; g.font = '14px monospace';
-  g.fillText(new Date().toLocaleTimeString('zh-TW', { hour12: false }), 12, 22);
+  g.fillText(new Date().toLocaleTimeString('zh-TW', { hour12: false }), 18, 30);
 }
 function setLive(on) {
   clearInterval(camTimer);
   if (DEMO) { if (on) { demoCam(); camTimer = setInterval(demoCam, 125); } return; }
   const img = $('live');
-  if (on && !img.getAttribute('src')) img.src = '/video_feed';
+  clearTimeout(liveRetry);
+  if (on && !img.getAttribute('src')) { img.src = '/video_feed?t=' + Date.now(); liveSince = Date.now(); }
   if (!on && img.getAttribute('src')) img.removeAttribute('src');       // 拿掉 src 才會中斷 MJPEG 串流
 }
+// 串流斷了（伺服器 10 分鐘換一條、Wi-Fi 閃斷、被同一支手機的新分頁取代）就自動重連
+let liveRetry = 0, liveSince = 0;
+function reconnectLive(delay = 2000) {
+  clearTimeout(liveRetry);
+  liveRetry = setTimeout(() => {
+    if (page !== 0 || document.hidden || DEMO) return;
+    $('live').removeAttribute('src');
+    setLive(true);
+  }, delay);
+}
+$('live').addEventListener('error', () => reconnectLive());
+setInterval(() => { if (!DEMO && page === 0 && !document.hidden && Date.now() - liveSince > 9 * 60000) reconnectLive(0); }, 30000);
+// 分頁被切走、關閉或放進背景時，一定要放掉串流，不然會一直佔著瀏覽器的連線名額
+window.addEventListener('pagehide', () => setLive(false));
 
 /* =========================================================
    需要登入的頁面

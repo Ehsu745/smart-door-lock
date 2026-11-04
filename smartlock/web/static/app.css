@@ -69,8 +69,8 @@ button { font: inherit; color: inherit; }
    1. 門鎖
    ========================================================= */
 .cam { position: relative; border-radius: 14px; overflow: hidden; background: #1d262c; aspect-ratio: 4 / 3;
-  max-height: 38dvh; width: 100%; margin: 0 auto; flex: none; }
-.cam img, .cam canvas { width: 100%; height: 100%; object-fit: cover; display: block; }
+  width: min(100%, calc(36dvh * 4 / 3)); margin: 0 auto; flex: none; }
+.cam img, .cam canvas { width: 100%; height: 100%; object-fit: contain; display: block; }   /* 不裁切，畫面上的文字不會被圓角切到 */
 .cam .who { position: absolute; left: 10px; bottom: 10px; color: #fff; font-size: 13px; background: rgba(20, 28, 33, .62);
   padding: 3px 10px; border-radius: 8px; backdrop-filter: blur(4px); }
 .rec { position: absolute; right: 10px; top: 10px; display: flex; align-items: center; gap: 6px; color: #fff; font: 600 13px var(--num);
@@ -87,7 +87,7 @@ button { font: inherit; color: inherit; }
 @keyframes drop { from { opacity: 0; transform: translateY(-6px); } }
 
 .lockzone { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; min-height: 0; }
-.dial { position: relative; width: min(46vw, 22dvh, 170px); aspect-ratio: 1; border: 0; padding: 0; background: none;
+.dial { position: relative; width: min(42vw, 19dvh, 160px); aspect-ratio: 1; border: 0; padding: 0; background: none;
   cursor: pointer; touch-action: none; border-radius: 50%; }
 .dial svg { width: 100%; height: 100%; overflow: visible; }
 .dial .face { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; transition: fill .4s; }
@@ -262,3 +262,23 @@ button { font: inherit; color: inherit; }
 a.btn { color: var(--ink); text-decoration: none; }
 a.btn.line { color: #fff; }
 .rep { display: inline-block; margin-left: 6px; font: 600 12px var(--num); color: var(--ink-2); background: var(--panel); border-radius: 999px; padding: 0 7px; }
+
+/* 門口狀態列：固定高度保留空間 */
+.strip { flex: none; height: 58px; margin-top: 10px; border-radius: 12px; padding: 0 14px; display: flex; align-items: center; gap: 10px;
+  background: var(--panel); color: var(--ink); transition: background .25s, color .25s; overflow: hidden; }
+.strip-main { min-width: 0; display: flex; flex-direction: column; line-height: 1.35; }
+.strip-main b { font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.strip-main span { font-size: 12px; color: inherit; opacity: .8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.strip-main span:empty { display: none; }
+.strip .count { margin-left: auto; font: 600 24px var(--num); }
+.strip[data-kind=idle] b { font-weight: 500; }
+.strip[data-kind=guest] { background: var(--plum-soft); color: #4A2F5C; }
+.strip[data-kind=gesture] { background: var(--brass-soft); color: #6B4E12; }
+.strip[data-kind=alert] { background: var(--signal-soft); color: #7c2a1a; }
+.lockzone { padding: 6px 0; }
+/* 矮螢幕（iPhone SE 等）：鎖和文字縮小一點 */
+@media (max-height: 700px) {
+  .dial { width: min(42vw, 16dvh, 160px); }
+  .state strong { font-size: 17px; }
+  .strip { height: 52px; }
+}

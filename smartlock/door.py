@@ -231,9 +231,9 @@ class DoorSystem:
             self._g_last = g_name if ok_g else None
             left = self._deadline - now
             hint = f'Show {" / ".join(cfg.allowed_gestures)}  {max(0, left):.0f}s'
-            cv2.putText(frame, hint, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 220, 255), 2)
+            cv2.putText(frame, hint, (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 220, 255), 2)
             if g_name:
-                cv2.putText(frame, f'{g_name} {g_score:.2f}', (10, 60), cv2.FONT_HERSHEY_SIMPLEX,
+                cv2.putText(frame, f'{g_name} {g_score:.2f}', (16, 66), cv2.FONT_HERSHEY_SIMPLEX,
                             0.8, (0, 220, 0) if ok_g else (0, 160, 255), 2)
             if self._g_streak >= cfg.gesture_frames:
                 self._armed, self._phase = False, 'face'

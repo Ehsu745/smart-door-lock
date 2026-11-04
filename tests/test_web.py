@@ -249,3 +249,34 @@ def test_events_include_clip(tmp_path):
     ev = c.get('/api/events?kinds=sentinel_saved').get_json()['events']
     assert ev[0]['clip'] == {'id': 99, 'deleted': True}
     assert ev[1]['clip']['id'] == rid and ev[1]['clip']['snapshot'] is True
+
+
+# ==========================================
+# 即時影像串流：避免舊分頁佔滿瀏覽器連線，讓網站看起來像當掉
+# ==========================================
+def test_stream_registry_same_device_replaces_old():
+    from smartlock.web.server import StreamRegistry
+    r = StreamRegistry(clock=lambda: 0)
+    a = r.open('phone')
+    b = r.open('phone')                      # 同一支手機開新分頁
+    c = r.open('laptop')
+    assert not r.active(a) and r.active(b) and r.active(c) and r.count() == 2
+
+
+def test_stream_registry_global_cap_and_max_age():
+    from smartlock.web.server import MAX_STREAMS, STREAM_MAX_SECONDS, StreamRegistry
+    t = {'now': 0}
+    r = StreamRegistry(clock=lambda: t['now'])
+    ids = [r.open(f'ip{i}') for i in range(MAX_STREAMS + 2)]
+    assert [r.active(i) for i in ids] == [False, False] + [True] * MAX_STREAMS    # 最舊的被關掉
+    t['now'] = STREAM_MAX_SECONDS + 1
+    assert not any(r.active(i) for i in ids)                                       # 超過時間，前端會重連
+    for i in ids:
+        r.close(i)
+    assert r.count() == 0
+
+
+def test_health():
+    _, c = client()
+    d = c.get('/api/health').get_json()
+    assert d['ok'] and d['streams'] == 0 and d['threads'] >= 1

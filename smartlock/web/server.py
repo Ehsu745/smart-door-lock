@@ -28,6 +28,51 @@ WEB_DIR = Path(__file__).resolve().parent
 MAX_FAILS = 5
 LOCKOUT_SECONDS = 60.0
 
+# 即時影像串流的限制：瀏覽器對同一個網站最多只開約 6 條連線，每條 MJPEG 串流會一直佔著一條。
+# 舊分頁（例如每次掃 QR 都開新分頁）沒關的話，第 7 頁就打不開，看起來像「網站當掉」。
+MAX_STREAMS = 4               # 全部手機合計；超過就關掉最舊的
+STREAM_MAX_SECONDS = 600      # 單條串流最長 10 分鐘，前端會自動重連
+STREAM_SEND_TIMEOUT = 20      # 手機休眠、離開 Wi-Fi 卡住超過 20 秒就斷線，釋放執行緒
+
+
+class StreamRegistry:
+    """追蹤正在播放的串流：同一台裝置開新串流時，關掉它之前的串流。"""
+
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self._next = 0
+        self._live = {}          # id → (ip, 開始時間)
+        self._kicked = set()
+        self._lock = threading.Lock()
+
+    def open(self, ip) -> int:
+        with self._lock:
+            self._next += 1
+            sid = self._next
+            for old, (old_ip, _) in self._live.items():
+                if old_ip == ip:
+                    self._kicked.add(old)
+            self._live[sid] = (ip, self.clock())
+            alive = [k for k in self._live if k not in self._kicked]
+            for old in sorted(alive)[:-MAX_STREAMS] if len(alive) > MAX_STREAMS else []:
+                self._kicked.add(old)
+            return sid
+
+    def active(self, sid) -> bool:
+        with self._lock:
+            if sid in self._kicked or sid not in self._live:
+                return False
+            return self.clock() - self._live[sid][1] < STREAM_MAX_SECONDS
+
+    def close(self, sid):
+        with self._lock:
+            self._live.pop(sid, None)
+            self._kicked.discard(sid)
+
+    def count(self) -> int:
+        with self._lock:
+            return len([k for k in self._live if k not in self._kicked])
+
 
 class PinGuard:
     """PIN 比對 + 連續錯誤鎖定（以來源 IP 計算）。store 可以是 PinStore 或單純的 PIN 字串。"""
@@ -94,6 +139,9 @@ def create_web(system, storage=None, line=None):
     logging.getLogger('werkzeug').setLevel(logging.WARNING)      # 不印每秒一次的 /api/status 請求紀錄
     guard = PinGuard(store)
     app.pin_guard = guard
+    streams = StreamRegistry()
+    app.streams = streams
+    started = time.time()
 
     # ==========================================
     # 登入與權限
@@ -212,14 +260,31 @@ def create_web(system, storage=None, line=None):
 
     @app.route('/video_feed')
     def video_feed():
+        sid = streams.open(request.remote_addr)
+
         def frames():
-            while not system.stop.is_set():
-                with system.guard:
-                    frame = system.jpeg
-                if frame is not None:
-                    yield b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n'
-                time.sleep(0.08)
-        return Response(frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+            try:
+                while not system.stop.is_set() and streams.active(sid):
+                    with system.guard:
+                        frame = system.jpeg
+                    if frame is not None:
+                        yield b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n'
+                    time.sleep(0.08)
+            finally:
+                streams.close(sid)
+        return Response(frames(), mimetype='multipart/x-mixed-replace; boundary=frame',
+                        headers={'Cache-Control': 'no-store'})
+
+    @app.route('/api/health')
+    def health():
+        """排查用：串流數、執行緒數、開啟的檔案數。網站卡住時先看這裡。"""
+        fds = None
+        try:
+            fds = len(os.listdir('/proc/self/fd'))
+        except OSError:
+            pass
+        return jsonify(ok=True, uptime=round(time.time() - started), streams=streams.count(),
+                       threads=threading.active_count(), open_files=fds)
 
     # ==========================================
     # 成員
@@ -315,7 +380,8 @@ def create_web(system, storage=None, line=None):
                     time.sleep(delay)
             finally:
                 cap.release()
-        return Response(frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+        return Response(frames(), mimetype='multipart/x-mixed-replace; boundary=frame',
+                        headers={'Cache-Control': 'no-store'})
 
     @app.route('/api/records/<int:rid>', methods=['DELETE'])
     def delete_record(rid):
