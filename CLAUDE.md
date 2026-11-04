@@ -37,7 +37,7 @@ Pi Camera 3 NoIR ─▶ Raspberry Pi 5 (4GB) ──USB 序列埠──▶ Arduin
 
 ```bash
 source .venv/bin/activate
-python -m pytest -q                 # 104 個測試，不需要相機或 Arduino（Mac 上序列埠測試會 skip）
+python -m pytest -q                 # 104 個測試，不需要相機或 Arduino（Mac：100 passed, 4 skipped，序列埠 pty 測試只在 Linux 跑）
 python app.py run --sim             # 完整系統，用模擬 Arduino
 python app.py records | cleanup | set-pin | test-camera | test-gesture | test-arduino
 # 只看版面（不用 Pi）：直接用瀏覽器開 smartlock/web/templates/index.html → 自動示範模式，PIN 1234
@@ -103,8 +103,16 @@ docs/                  01 居家助理未來規劃（概念階段）、02 智慧
 - 用 SSH 啟動要在 Pi 螢幕顯示視窗：前面加 `DISPLAY=:0`
 - MediaPipe 0.10.18 沒有 Python 3.13 的 ARM wheel → Python 3.9–3.12
 - 相機後端順序：rpicam-vid（YUV420 pipe）→ Picamera2 → USB（`CAMERA_INDEX`）
-- **使用者的 Mac**：Python 3.11，沒有 uv（用 `python3 -m venv`）
+- **使用者的 Mac**：Python 3.11（`/opt/homebrew/bin/python3.11`）、uv 有裝（`/opt/homebrew/bin/uv`）；系統內建 `python3` 是 3.9.6，不要用它建 venv。建環境：`uv venv --python 3.11 .venv && uv pip install --python .venv/bin/python -r requirements-dev.txt`
 - 部署到 Pi：複製 `smartlock/`、`app.py`、`tests/` 到 `~/door_pi_gesture`，資料檔不動；資料庫會自動升級
+
+### Git / GitHub
+
+- Repo：`~/GITHUB/smart-door-lock`（使用者所有 git 專案都放在 `~/GITHUB/`）→ GitHub `Ehsu745/smart-door-lock`，**目前是 private**
+- `git log` 從最舊到最新完整保留：PC 測試版（10/14）→ Pi 單檔版 → 手勢單檔版（10/19、10/20）→ v2 模組化（11/03）→ v2.x（11/04）。舊版原始檔在 `~/FCU/CE_2026/AI_smartlock_playground/old_ver/`，不要動
+- 遠端有 `backup/pre-rebuild` 分支（2026-11-04 重建歷史前的 main），確認沒問題後可刪
+- Mac 上的開發 / 訓練資料夾：`~/FCU/CE_2026/AI_smartlock_playground/smartlock_project`（有 `.venv`、`faces/`、`face.yml`、`records/`），和 repo 分開；改完要同步進 repo 再 commit
+- **待辦（使用者決定延後）**：公開 repo 前要清掉歷史裡的敏感資訊（README 有 Pi 帳號與 IP `pi@192.168.0.50`），需要改寫歷史 + force push，先問
 
 ## 7. 跟使用者合作的方式
 
@@ -132,6 +140,6 @@ docs/                  01 居家助理未來規劃（概念階段）、02 智慧
 
 ## 9. 隱私與機密
 
-- 不要 commit：`faces/`、`face.yml`、`id_map.txt`、`models/`、`records/`、`pin.json`、`smartlock.env`（都在 `.gitignore`）
+- 不要 commit：`faces/`、`face.yml`、`id_map.txt`、`models/`、`records/`、`pin.json`、`smartlock.env`（都在 `.gitignore`）；`.gitignore` 另外擋掉任何位置的 `*.db*`、`*.sqlite*`、`*.avi`、`*.mp4`、`*.task`、`*.env`（`*.env.example` 除外）
 - 紀錄頁、成員頁、設定頁都需要 PIN（含人臉影像）
 - 大型語言模型或任何自動化**不能自己開鎖**（居家助理規劃的原則）
