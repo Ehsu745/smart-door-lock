@@ -23,3 +23,17 @@ records/
 # 網頁 PIN（雜湊）
 pin.json
 pin.tmp
+
+# macOS
+.DS_Store
+
+# 保險：任何位置的資料庫、錄影、模型、私密設定都不上傳
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.avi
+*.mp4
+*.task
+*.env
+!*.env.example
