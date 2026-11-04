@@ -25,7 +25,9 @@
   --ease: cubic-bezier(.22, .8, .24, 1);
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html, body { height: 100%; margin: 0; }
+html, body { height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none; }
+/* 整個 App 固定貼齊螢幕四邊：不依賴 100dvh（LINE 內建瀏覽器、舊版 Safari / Android 不支援），整頁不會被捲動 */
+body { position: fixed; inset: 0; width: 100%; }
 body {
   background: var(--wall); color: var(--ink); font: 15px/1.5 var(--text);
   overflow: hidden; overscroll-behavior: none; -webkit-user-select: none; user-select: none;
@@ -37,7 +39,8 @@ button { font: inherit; color: inherit; }
 /* =========================================================
    外框：固定一個畫面高，四頁左右排列
    ========================================================= */
-.app { height: 100dvh; display: grid; grid-template-rows: auto 1fr calc(var(--tab-h) + var(--safe-b)); }
+.app { position: fixed; inset: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
+  padding-top: env(safe-area-inset-top, 0px); }
 .top { display: flex; align-items: center; gap: 10px; padding: 10px 18px 6px; }
 .top h1 { font-size: 17px; font-weight: 700; margin: 0; flex: 1; letter-spacing: .02em; }
 .conn { font-size: 12px; color: var(--ink-2); display: flex; align-items: center; gap: 6px; }
@@ -53,7 +56,7 @@ button { font: inherit; color: inherit; }
 .page h2 { font-size: 22px; font-weight: 700; margin: 6px 2px 12px; }
 
 /* 底部分頁列 */
-.tabs { display: grid; grid-template-columns: repeat(4, 1fr); background: var(--panel); border-top: 1px solid var(--line);
+.tabs { height: calc(var(--tab-h) + var(--safe-b)); display: grid; grid-template-columns: repeat(4, 1fr); background: var(--panel); border-top: 1px solid var(--line);
   padding-bottom: var(--safe-b); position: relative; }
 .tab { border: 0; background: none; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 2px; font-size: 11px; color: var(--ink-2); cursor: pointer; }
@@ -69,7 +72,7 @@ button { font: inherit; color: inherit; }
    1. 門鎖
    ========================================================= */
 .cam { position: relative; border-radius: 14px; overflow: hidden; background: #1d262c; aspect-ratio: 4 / 3;
-  width: min(100%, calc(36dvh * 4 / 3)); margin: 0 auto; flex: none; }
+  width: var(--cam-w, min(100%, 300px)); margin: 0 auto; flex: none; }
 .cam img, .cam canvas { width: 100%; height: 100%; object-fit: contain; display: block; }   /* 不裁切，畫面上的文字不會被圓角切到 */
 .cam .who { position: absolute; left: 10px; bottom: 10px; color: #fff; font-size: 13px; background: rgba(20, 28, 33, .62);
   padding: 3px 10px; border-radius: 8px; backdrop-filter: blur(4px); }
@@ -87,7 +90,7 @@ button { font: inherit; color: inherit; }
 @keyframes drop { from { opacity: 0; transform: translateY(-6px); } }
 
 .lockzone { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; min-height: 0; }
-.dial { position: relative; width: min(42vw, 19dvh, 160px); aspect-ratio: 1; border: 0; padding: 0; background: none;
+.dial { position: relative; width: var(--dial, 120px); aspect-ratio: 1; border: 0; padding: 0; background: none;
   cursor: pointer; touch-action: none; border-radius: 50%; }
 .dial svg { width: 100%; height: 100%; overflow: visible; }
 .dial .face { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; transition: fill .4s; }
@@ -194,7 +197,7 @@ button { font: inherit; color: inherit; }
 .scrim.show { opacity: 1; pointer-events: auto; }
 .sheet { position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel); border-radius: 20px 20px 0 0; z-index: 11;
   padding: 10px 18px calc(18px + var(--safe-b)); transform: translateY(105%); transition: transform .32s var(--ease);
-  max-height: 88dvh; display: flex; flex-direction: column; }
+  max-height: 88vh; max-height: 88dvh; display: flex; flex-direction: column; }
 .sheet.show { transform: none; }
 .sheet .grab { width: 38px; height: 4px; border-radius: 2px; background: var(--line); margin: 0 auto 10px; }
 .sheet h3 { margin: 2px 0 12px; font-size: 18px; }
@@ -224,7 +227,7 @@ button { font: inherit; color: inherit; }
 }
 /* 平板 / 電腦：內容置中，不要拉太寬 */
 @media (min-width: 700px) {
-  .app { max-width: 480px; margin: 0 auto; box-shadow: 0 0 0 1px var(--line); }
+  .app { max-width: 480px; margin: 0 auto; right: 0; box-shadow: 0 0 0 1px var(--line); }
 }
 /* 設定：可點的列 */
 .row.link { width: 100%; border: 0; border-top: 1px solid var(--line); background: none; text-align: left; cursor: pointer; }
@@ -278,7 +281,14 @@ a.btn.line { color: #fff; }
 .lockzone { padding: 6px 0; }
 /* 矮螢幕（iPhone SE 等）：鎖和文字縮小一點 */
 @media (max-height: 700px) {
-  .dial { width: min(42vw, 16dvh, 160px); }
   .state strong { font-size: 17px; }
   .strip { height: 52px; }
 }
+
+/* 極矮的畫面（橫放手機、鍵盤彈出）：放不下時門鎖頁改成頁內捲動，分頁列永遠看得到 */
+#p-door.tight { overflow-y: auto; }
+#p-door.tight .lockzone { flex: none; }
+.compact .strip { height: 52px; margin-top: 8px; }
+.compact .state strong { font-size: 16px; }
+.compact .state span { font-size: 12px; }
+.compact .strip-main b { font-size: 14px; }

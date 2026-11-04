@@ -190,6 +190,31 @@ document.addEventListener('keydown', (e) => {
 });
 
 /* =========================================================
+   依手機實際高度分配門鎖頁：影像、狀態列、鎖、按鈕剛好塞滿一個畫面
+   ========================================================= */
+function fitDoor() {
+  const pageEl = $('p-door');
+  const H = viewport.clientHeight, W = pageEl.clientWidth - 32;       // 左右各 16px 邊距
+  if (!H || !W) return;
+  const compact = H < 520;
+  pageEl.classList.toggle('compact', compact);
+  const strip = compact ? 60 : 68, controls = 52, stateH = compact ? 44 : 52, pad = 16 + 12 + 16;
+  const room = H - strip - controls - stateH - pad;                    // 影像 + 鎖 可以用的高度
+  let camH = Math.min(W * 3 / 4, room * (compact ? 0.56 : 0.62));
+  let dial = Math.min(160, W * 0.42, room - camH);
+  if (dial < 96) { dial = 96; camH = Math.max(120, room - dial); }      // 鎖至少 96px，好按
+  camH = Math.min(camH, W * 3 / 4);
+  const tight = camH + dial > room + 1;
+  pageEl.classList.toggle('tight', tight);
+  document.documentElement.style.setProperty('--cam-w', `${Math.round(camH * 4 / 3)}px`);
+  document.documentElement.style.setProperty('--dial', `${Math.round(dial)}px`);
+}
+if (window.ResizeObserver) new ResizeObserver(fitDoor).observe(viewport);
+window.addEventListener('resize', fitDoor);
+window.addEventListener('orientationchange', () => setTimeout(fitDoor, 300));
+if (window.visualViewport) window.visualViewport.addEventListener('resize', fitDoor);
+
+/* =========================================================
    1. 門鎖
    ========================================================= */
 const dial = $('dial'), holdRing = $('holdRing'), timerRing = $('timerRing');
@@ -709,6 +734,7 @@ async function poll() {
   $('demoCam').hidden = !DEMO;
   $('live').hidden = DEMO;
   const start = Math.max(0, PAGES.indexOf(location.hash.slice(1)));
+  fitDoor();
   go(start, false);
   poll();
   setInterval(() => { if (!document.hidden) poll(); }, 1000);
