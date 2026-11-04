@@ -50,13 +50,32 @@ bash deploy/install_service.sh --desktop # 登入桌面後在 Pi 螢幕顯示視
 
 ---
 
+## 哨兵（陌生人自動錄影）
+
+| 規則 | 預設 | 環境變數 |
+|---|---|---|
+| 陌生人連續出現多久開始錄 | 5 秒（期間認出 master 就取消） | `SENTINEL_TRIGGER` |
+| 觸發前保留的畫面 | 5 秒 | `SENTINEL_PREROLL` |
+| 陌生人離開多久停止 | 5 秒 | `SENTINEL_STOP` |
+| 單段最長 | 60 秒，人還在就接著錄下一段 | `SENTINEL_MAX` |
+| 臉寬下限（排除遠處路人） | 80 px | `SENTINEL_MIN_FACE` |
+| 兩次通知最短間隔 | 5 分鐘 | `SENTINEL_COOLDOWN` |
+
+- **格式**：MJPG `.avi`，10 fps，約 0.3 MB/秒（60 秒約 20 MB）。另存臉最大的一張截圖。
+- **查看**：控制頁 →「紀錄 ›」，或 `http://<IP>:5050/records`。可回放、2 倍速、下載、刪除；另有完整事件紀錄（開鎖、訪客、PIN 錯誤…）。
+- **權限**：有設 `CONTROL_PIN` 時，看紀錄也要 PIN；PIN 連續錯 5 次鎖 60 秒。
+- **SD 卡容量**：超過 7 天、總量超過 2 GB、或 SD 卡剩不到 1 GB 時，自動從最舊的刪起（啟動時、每段錄完、每小時檢查）。文字事件保留 90 天。
+- 資料都在 `records/`（`smartlock.db` + `clips/`），已列入 `.gitignore`，不會推上 GitHub。
+
 ## 程式結構
 
 ```
 app.py                 入口（python app.py <指令>）
 smartlock/
   config.py            所有設定（環境變數）集中一處
-  events.py            事件匯流排：開鎖、訪客、失敗… 都發事件，之後錄影、LINE 通知直接訂閱
+  events.py            事件匯流排：開鎖、訪客、失敗… 都發事件，錄影、紀錄、之後的 LINE 通知各自訂閱
+  sentinel.py          哨兵：陌生人逗留自動錄影（預錄緩衝、背景寫檔）
+  storage.py           SQLite 紀錄 + SD 卡容量管理
   door.py              狀態機（人臉 → 手勢 → 開鎖），不碰硬體，可單獨測試
   face.py              人臉偵測、辨識、採集、訓練
   gesture.py           MediaPipe 手勢（含備援規則）
@@ -66,7 +85,7 @@ smartlock/
   qr.py                控制頁 QR code
   web/                 Flask 控制頁（server.py + templates/ + static/）
   cli.py               指令列與選單
-tests/                 49 個自動測試，不需要相機或 Arduino
+tests/                 74 個自動測試，不需要相機或 Arduino
 deploy/                systemd 服務與安裝腳本
 arduino/door_lock/     學弟的 Arduino sketch
 ```
@@ -75,5 +94,7 @@ arduino/door_lock/     學弟的 Arduino sketch
 
 - **狀態機**（假時鐘逐幀模擬）：master 人臉+手勢開鎖、錯誤手勢逾時與重試、低信心手勢、只比手勢沒臉、手勢中離開、手短暫擋臉、停留不重複開鎖、離開 3 秒後重新偵測、只用人臉模式、guest 只通知不開鎖、多人入鏡、陌生人、自動模式關閉、Arduino 失敗。
 - **Arduino 協定**：用虛擬序列埠模擬學弟的 sketch（有回覆、不回覆、看不懂指令）。
-- **網頁**：PIN 錯誤/正確、上鎖暫停自動、無效指令。
+- **網頁**：PIN 錯誤/正確、連續錯誤鎖定、上鎖暫停自動、無效指令；紀錄頁需登入、回放、下載、刪除。
+- **哨兵**：短暫出現不錄、超過 5 秒錄影且含預錄、master 出現取消、偵測短暫中斷容忍、遠處臉忽略、長時間分段、通知冷卻、迴圈變慢時影片仍是實際長度、SD 空間不足不錄。
+- **容量管理**：依容量 / 天數 / SD 剩餘空間自動刪最舊的、中斷的錄影標成不完整、路徑不能跑出 records 資料夾。
 - **其他**：設定讀取、手勢規則、QR code 可解碼、訓練保留 guest 分類。

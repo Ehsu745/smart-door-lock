@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>哨兵紀錄</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="records">
+  <header class="topbar">
+    <a href="/" class="back">‹ 控制頁</a>
+    <h2>哨兵紀錄</h2>
+    <span></span>
+  </header>
+
+  <div class="card" id="login" hidden>
+    <b>紀錄含有人臉影像，請輸入 PIN</b>
+    <div class="row">
+      <input id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="PIN">
+      <button onclick="login()">確認</button>
+    </div>
+    <div id="loginMsg" class="bad"></div>
+  </div>
+
+  <main id="main" hidden>
+    <div class="card" id="usage">讀取中…</div>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="clips" onclick="showTab('clips')">錄影</button>
+      <button class="tab" data-tab="events" onclick="showTab('events')">事件紀錄</button>
+    </nav>
+
+    <section id="clips">
+      <div id="clipList"></div>
+      <button class="more" id="moreClips" onclick="loadClips(true)" hidden>載入更多</button>
+    </section>
+
+    <section id="events" hidden>
+      <div class="chips" id="chips"></div>
+      <div class="card"><ul id="eventList"></ul></div>
+    </section>
+  </main>
+
+  <script src="/static/records.js"></script>
+</body>
+</html>

@@ -57,6 +57,19 @@ def door_status(system, cfg: Config):
     return (50, 50, 190), 'LOCKED', ('auto unlock: on' if st.get('auto') else 'auto unlock: OFF')
 
 
+def draw_rec(frame, system):
+    """哨兵錄影中：畫面右上角顯示紅點 REC（讓門口的人知道正在錄影）。"""
+    provider = getattr(system, 'providers', {}).get('sentinel')
+    try:
+        st = provider() if provider else None
+    except Exception:
+        st = None
+    if st and st.get('state') == 'recording':
+        w = frame.shape[1]
+        cv2.circle(frame, (w - 78, 26), 9, (0, 0, 230), -1)
+        draw_label(frame, 'REC', (w - 62, 34), 0.7, (255, 255, 255), (0, 0, 180))
+
+
 def compose_display(system, cfg: Config, url: str, qr):
     """門口顯示畫面。有 QR：右邊面板（QR + 狀態）；沒有 QR：畫面底部加狀態列。"""
     with system.guard:
@@ -64,6 +77,7 @@ def compose_display(system, cfg: Config, url: str, qr):
     if frame is None:
         frame = np.zeros((cfg.frame_size[1], cfg.frame_size[0], 3), np.uint8)
         cv2.putText(frame, 'Starting camera...', (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (200, 200, 200), 2)
+    draw_rec(frame, system)
     color, text, sub = door_status(system, cfg)
     font = cv2.FONT_HERSHEY_SIMPLEX
     if not cfg.enable_qr:

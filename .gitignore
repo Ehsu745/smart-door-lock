@@ -16,3 +16,6 @@ smartlock.env
 # 測試輸出
 *_test.jpg
 *.log
+
+# 哨兵錄影與資料庫（含人臉影像）
+records/

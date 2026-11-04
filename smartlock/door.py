@@ -39,6 +39,8 @@ class DoorSystem:
         self.clock = clock
         self.event_log = EventLog()
         self.bus.subscribe('*', self._record)
+        self.frame_hooks = []                # 每幀呼叫 hook(frame, faces, now)，例如哨兵錄影
+        self.providers = {}                  # 名稱 → 回傳 dict 的函式，結果併入 snapshot()（網頁狀態）
 
         self.guard = threading.Lock()
         self.stop = threading.Event()
@@ -93,6 +95,11 @@ class DoorSystem:
         data['connected'] = self.arduino.connected
         data['pin_required'] = bool(self.cfg.control_pin)
         data['unlocked'] = self.clock() < self.unlocked_until
+        for name, provider in self.providers.items():
+            try:
+                data[name] = provider()
+            except Exception:
+                log.exception('狀態提供者 %s 失敗', name)
         return data
 
     def door(self, command: str, reason: str):
@@ -148,6 +155,11 @@ class DoorSystem:
             self._candidate, self._streak = None, 0
 
         g_name, g_score = self._advance(frame, accepted, name, now)
+        for hook in self.frame_hooks:
+            try:
+                hook(frame, faces, now)
+            except Exception:
+                log.exception('frame hook 失敗')
 
         self.update(name=name, category=category,
                     distance=None if best is None else round(float(best), 1),

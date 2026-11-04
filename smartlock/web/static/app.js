@@ -39,6 +39,14 @@ function gestureHint(d) {
     <br>目前偵測：${d.gesture ?? '—'} ${d.gesture_score ?? ''}</div>`;
 }
 
+function sentinelLine(d) {
+  const st = d.sentinel;
+  if (!st) return '';
+  const text = st.state === 'recording' ? `<span class="rec">● 錄影中 ${st.seconds} 秒</span>`
+    : st.state === 'watching' ? `<span class="warn">偵測到陌生人 ${st.seconds} 秒</span>` : '監看中';
+  return `<br>哨兵：${text}　<a class="link" href="/records">紀錄 ›</a>`;
+}
+
 async function poll() {
   try {
     const d = await (await fetch('/api/status')).json();
@@ -50,7 +58,7 @@ async function poll() {
       辨識：<b>${d.name}</b> ${d.category} ${d.distance ?? ''}
       <br>開鎖條件：${rule}
       <br>Arduino：<span class="${d.connected ? 'ok' : 'bad'}">${d.arduino}</span>
-      <br>門鎖：${lock}　自動解鎖：${d.auto ? '開' : '關'}
+      <br>門鎖：${lock}　自動解鎖：${d.auto ? '開' : '關'}${sentinelLine(d)}
       <br>${s.dataset.msg || d.message}`;
     $('ev').innerHTML = d.events.map((e) => `<li>${e}</li>`).join('');
   } catch (e) {}

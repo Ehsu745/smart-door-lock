@@ -69,7 +69,28 @@ class Config:
     public_url: str = ''
     simulate: bool = False                        # True = 不接 Arduino，用文字模擬
 
+    # ---- 哨兵（陌生人錄影） ----
+    sentinel: bool = True
+    sentinel_trigger: float = 5.0                 # 陌生人連續出現幾秒才開始錄影
+    sentinel_stop: float = 5.0                    # 陌生人離開幾秒後停止
+    sentinel_max: float = 60.0                    # 單段影片最長秒數（超過就切成下一段）
+    sentinel_preroll: float = 5.0                 # 觸發前保留幾秒畫面
+    sentinel_fps: float = 10.0                    # 錄影幀率（省空間）
+    sentinel_cooldown: float = 300.0              # 兩次「建議通知」最短間隔（秒）
+    sentinel_min_face: int = 80                   # 臉寬至少幾 px 才算（排除遠處路人）
+
+    # ---- 紀錄保存（SD 卡容量管理） ----
+    record_dir: Optional[Path] = None             # None = 專案資料夾/records
+    record_max_mb: float = 2048.0                 # 錄影總容量上限，超過刪最舊的
+    record_max_days: float = 7.0                  # 錄影保留天數
+    record_min_free_mb: float = 1024.0            # SD 卡剩餘空間低於此值時先刪舊檔，仍不足就不錄
+    event_keep_days: float = 90.0                 # 文字事件紀錄保留天數
+
     # ---- 路徑 ----
+    @property
+    def records_path(self) -> Path:
+        return Path(self.record_dir) if self.record_dir else self.base / 'records'
+
     @property
     def face_dir(self) -> Path:
         return self.base / 'faces'
@@ -123,4 +144,17 @@ class Config:
             control_pin=env.get('CONTROL_PIN', ''),
             public_url=env.get('PUBLIC_URL', ''),
             simulate=_flag(env, 'SIM_ARDUINO', '0'),
+            sentinel=_flag(env, 'SENTINEL', '1'),
+            sentinel_trigger=float(env.get('SENTINEL_TRIGGER', 5)),
+            sentinel_stop=float(env.get('SENTINEL_STOP', 5)),
+            sentinel_max=float(env.get('SENTINEL_MAX', 60)),
+            sentinel_preroll=float(env.get('SENTINEL_PREROLL', 5)),
+            sentinel_fps=float(env.get('SENTINEL_FPS', 10)),
+            sentinel_cooldown=float(env.get('SENTINEL_COOLDOWN', 300)),
+            sentinel_min_face=int(env.get('SENTINEL_MIN_FACE', 80)),
+            record_dir=Path(env['RECORD_DIR']) if env.get('RECORD_DIR') else None,
+            record_max_mb=float(env.get('RECORD_MAX_MB', 2048)),
+            record_max_days=float(env.get('RECORD_MAX_DAYS', 7)),
+            record_min_free_mb=float(env.get('RECORD_MIN_FREE_MB', 1024)),
+            event_keep_days=float(env.get('EVENT_KEEP_DAYS', 90)),
         )

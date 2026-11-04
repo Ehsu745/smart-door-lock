@@ -10,6 +10,8 @@
   python app.py test-arduino    只測試 Arduino：上鎖 → 解鎖 → 等待自動上鎖
   python app.py test-gesture    只測手勢：即時顯示手勢與信心值，存 gesture_test.jpg
   python app.py qr              在終端機印出控制頁網址的 QR code
+  python app.py records         哨兵錄影清單、容量與最近的事件紀錄
+  python app.py cleanup         立即執行容量管理（刪除過期 / 超量的錄影）
 （也可以用 python -m smartlock <指令>）
 """
 from __future__ import annotations
@@ -33,6 +35,8 @@ from .events import EventBus
 from .face import FaceRecognizer, capture, load_detector, train
 from .gesture import GestureDetector, draw_hand
 from .qr import control_url, print_qr
+from .sentinel import Sentinel
+from .storage import Storage
 from .web import create_web
 
 log = logging.getLogger('smartlock')
@@ -64,6 +68,20 @@ def run(cfg: Config):
     camera = Camera(cfg)
     arduino = FakeArduino(cfg) if cfg.simulate else Arduino(cfg)
     system = DoorSystem(cfg, arduino, recognizer, gesture, EventBus())
+    storage = Storage(cfg)
+    system.bus.subscribe('*', storage.log_event)      # 所有事件寫入 SQLite（網頁「事件紀錄」）
+    removed = storage.enforce()
+    if removed:
+        log.info('啟動時清掉 %d 段過期 / 超量的錄影', removed)
+    sentinel = None
+    if cfg.sentinel:
+        sentinel = Sentinel(cfg, storage, system.bus)
+        system.frame_hooks.append(sentinel.observe)
+        system.providers['sentinel'] = lambda: sentinel.status(system.clock())
+        u = storage.usage()
+        log.info('哨兵：陌生人 ≥ %.0f 秒自動錄影；已有 %d 段 %.0f MB / 上限 %.0f MB、保留 %.0f 天；SD 卡剩 %.1f GB',
+                 cfg.sentinel_trigger, u.count, u.used_mb, cfg.record_max_mb, cfg.record_max_days,
+                 u.disk_free_mb / 1024)
     arduino.connect()                                 # 失敗也繼續，watchdog 會重試
     system.update(message='系統已啟動')
 
@@ -74,7 +92,7 @@ def run(cfg: Config):
     worker = threading.Thread(target=system.run_loop, args=(camera,), daemon=True, name='recognition')
     worker.start()
     threading.Thread(target=arduino.watchdog, args=(system.stop,), daemon=True, name='arduino-watchdog').start()
-    web = create_web(system)
+    web = create_web(system, storage)
     threading.Thread(target=lambda: web.run(host='0.0.0.0', port=cfg.web_port, threaded=True, use_reloader=False),
                      daemon=True, name='web').start()
 
@@ -96,6 +114,9 @@ def run(cfg: Config):
     finally:
         system.stop.set()
         worker.join(timeout=3)
+        if sentinel is not None:
+            sentinel.close(system.clock())              # 把錄到一半的影片收尾
+        storage.close()
         arduino.send('LOCK')
         arduino.close()
         camera.close()
@@ -214,10 +235,34 @@ def show_qr(cfg: Config):
 # ==========================================
 # 主程式
 # ==========================================
+def show_records(cfg: Config):
+    from datetime import datetime
+    storage = Storage(cfg)
+    u = storage.usage()
+    print(f'錄影：{u.count} 段，{u.used_mb:.0f} MB / 上限 {u.limit_mb:.0f} MB，保留 {u.keep_days:.0f} 天'
+          f'｜SD 卡剩 {u.disk_free_mb / 1024:.1f} GB / {u.disk_total_mb / 1024:.1f} GB')
+    print(f'位置：{storage.root}')
+    for r in storage.list_records(15):
+        when = datetime.fromtimestamp(r['started']).strftime('%m/%d %H:%M:%S')
+        dist = '—' if r['min_distance'] is None else f'{r["min_distance"]:.0f}'
+        print(f'  #{r["id"]:<4} {when}  {r["duration"]:>5.0f} 秒  {r["size_bytes"] / 1048576:>5.1f} MB  '
+              f'距離 {dist:>4}  {r["status"]}  {r["video"]}')
+    print('最近事件：')
+    for e in storage.list_events(15):
+        print(f'  {datetime.fromtimestamp(e["time"]).strftime("%m/%d %H:%M:%S")}  {e["text"]}')
+    storage.close()
+
+
+def cleanup(cfg: Config):
+    storage = Storage(cfg)
+    print(f'已刪除 {storage.enforce()} 段錄影')
+    show_records(cfg)
+
+
 def menu(cfg: Config):
     while True:
         print('\n1. 採集人臉\n2. 訓練模型\n3. 啟動門鎖系統\n4. 測試 Arduino\n5. 離開'
-              '\n6. 測試相機\n7. 啟動門鎖系統（模擬 Arduino）\n8. 測試手勢')
+              '\n6. 測試相機\n7. 啟動門鎖系統（模擬 Arduino）\n8. 測試手勢\n9. 哨兵紀錄與容量')
         choice = input('選擇：').strip()
         try:
             if choice == '1':
@@ -238,6 +283,8 @@ def menu(cfg: Config):
                 return
             elif choice == '8':
                 test_gesture(cfg)
+            elif choice == '9':
+                show_records(cfg)
         except (RuntimeError, ValueError, OSError, cv2.error) as exc:
             print('錯誤：', exc)
 
@@ -248,7 +295,8 @@ def main(argv=None) -> int:
     try:
         cfg = Config.from_env()
         commands = {'train': train, 'run': run, 'test-arduino': test_arduino,
-                    'test-camera': test_camera, 'test-gesture': test_gesture}
+                    'test-camera': test_camera, 'test-gesture': test_gesture,
+                    'records': show_records, 'cleanup': cleanup}
         if cfg.enable_qr:
             commands['qr'] = show_qr
         if not argv:
