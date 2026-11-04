@@ -74,7 +74,7 @@ bash deploy/install_service.sh --desktop # 登入桌面後在 Pi 螢幕顯示視
 - 輸入一次 PIN 後，這支手機在本次啟動期間都不用再輸入；改 PIN 後所有手機都要重新輸入。
 - PIN 來源：`pin.json`（網頁或 `python app.py set-pin` 設定，PBKDF2 雜湊、權限 600）優先，其次是 `smartlock.env` 的 `CONTROL_PIN`。
 - 沒有 PIN 的手機按開鎖只會跳出鍵盤，不算 PIN 錯誤，不會觸發鎖定。
-- 開發版面時可以不接 Pi：`cd smartlock/web && python3 -m http.server`，開 `http://localhost:8000/templates/index.html` 會自動進入示範模式。
+- 預覽版面不用接 Pi：直接雙擊 `smartlock/web/templates/index.html`，會自動進入示範模式（示範 PIN 1234）。
 
 ## 程式結構
 
