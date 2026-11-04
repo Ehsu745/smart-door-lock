@@ -31,7 +31,13 @@ Pi Camera 3 NoIR ─▶ Raspberry Pi 5 (4GB) ──USB 序列埠──▶ Arduin
 
 額外完成：手機單頁 App（門鎖 / 成員 / 紀錄 / 設定）、PIN 雜湊與網頁變更、網頁變更主人/訪客、網頁刪除成員（v2.4：警告無法復原 → PIN → 刪照片並重新訓練）、串流連線數修正（網站「當掉」問題）、依手機尺寸排版。
 
-**還沒在實機驗證的**：v2.2.2 之後的手機版面、v2.3 的變更權限、v2.4 的刪除成員（含 Pi 上重新訓練的耗時）—— 都只在模擬環境（Playwright + 假相機）測過。學弟的 Pi 上可能還在跑舊的單檔 `app.py`。
+**還沒在實機驗證的**：v2.2.2 之後的手機版面、v2.3 的變更權限、v2.4 的刪除成員（含 Pi 上重新訓練的耗時）、v2.5 的 LINE 真實發送、成員頁改版 —— 都只在模擬環境（Playwright + 假相機）測過。學弟的 Pi 上可能還在跑舊的單檔 `app.py`。**下一步：Pi 拿回來後部署並逐項實測。**
+
+**手機頁改版（2026-11-04，尚未 commit，使用者說先不更新 git）**
+- 成員詳情：「資料」卡（開門方式 / 訓練照片 / 最近出現）+「管理」卡只有「修改權限 ›」
+- 修改權限子頁：標題列 ‹ 修改權限 … 頭像 ⓘ ✕；iOS 風格滾輪（主人 / 訪客）；**沒有套用鍵，離開（‹、✕、點背景、Esc）時有改才跳 PIN 生效，PIN 鍵盤按 ✕ = 放棄**（使用者同意的做法：避免滾動時一直跳 PIN）；ⓘ 是主人 / 訪客差別說明（蓋在滾輪上）；滾輪下方只在有改時顯示「離開這頁時輸入 PIN 即生效」；最下方分隔線後是「刪除成員資料」
+- 門鎖分頁：狀態列和影像同寬（`--cam-w`）；手勢提示只顯示中文名（讚 / YA），窄螢幕才放得下
+- 預覽：`python tools/preview_web.py`（port 8800，示範模式、no-cache，手機用區網 IP 開）
 
 ## 3. 常用指令
 
@@ -40,7 +46,7 @@ source .venv/bin/activate
 python -m pytest -q                 # 119 個測試，不需要相機或 Arduino（Mac：115 passed, 4 skipped，序列埠 pty 測試只在 Linux 跑）
 python app.py run --sim             # 完整系統，用模擬 Arduino
 python app.py records | cleanup | set-pin | test-camera | test-gesture | test-arduino | test-line
-# 只看版面（不用 Pi）：直接用瀏覽器開 smartlock/web/templates/index.html → 自動示範模式，PIN 1234
+# 只看版面（不用 Pi）：python tools/preview_web.py → http://localhost:8800（手機用區網 IP），自動示範模式，PIN 1234
 ```
 
 **改完程式一定要跑 pytest**；改前端要實際開瀏覽器看（Playwright 截圖，至少 375×548 和 390×664 兩種尺寸）。

@@ -283,7 +283,8 @@ function renderStrip(d, rec) {
   let kind = 'idle', title = `門口：${whoLabel(d)}`, sub = '', count = '';
   if (d.phase === 'gesture' && !d.unlocked) {
     kind = 'gesture'; title = `${d.target || ''} 人臉通過`;
-    sub = `請比出手勢：${(d.allowed || []).join(' 或 ')}`; count = String(Math.ceil(d.countdown || 0));
+    // 狀態列和影像同寬，窄螢幕放不下英文名稱：「讚(Thumb_Up)」只顯示「讚」
+    sub = `請比出手勢：${(d.allowed || []).map((g) => g.split('(')[0]).join(' / ')}`; count = String(Math.ceil(d.countdown || 0));
   } else if (d.visitor && !d.unlocked) {
     kind = 'guest'; title = `訪客 ${d.visitor} 在門口`; sub = '訪客不會自動開門，要讓他進來就按住鎖';
   } else if (rec) {
@@ -445,21 +446,113 @@ function renderPeople() {
   });
 }
 const ROLE_NAME = { master: '主人', guest: '訪客' };
+const ROLE_DESC = { master: '人臉＋手勢自動開門', guest: '只通知，不自動開門' };
+// 成員詳情：上面是資料，下面只有一個「修改權限」入口（變更身分、刪除都收在裡面，避免誤觸）
 function personSheet(i) {
   const p = people[i];
-  const to = p.role === 'master' ? 'guest' : 'master';
   openSheet(`
     <div class="detail-head">${avatar(p)}
       <div><h3 style="margin:0">${esc(p.name)}</h3><span class="role ${p.role}">${ROLE_NAME[p.role]}</span></div></div>
-    <div class="sec" style="padding:0 14px">
-      <div class="row"><span>開門方式</span><span class="v">${p.role === 'master' ? '人臉＋手勢自動開門' : '只通知，不自動開門'}</span></div>
+    <div class="sheet-label">資料</div>
+    <div class="sheet-card">
+      <div class="row"><span>開門方式</span><span class="v">${ROLE_DESC[p.role]}</span></div>
       <div class="row"><span>訓練照片</span><span class="v">${p.photos} 張</span></div>
       <div class="row"><span>最近出現</span><span class="v">${ago(p.last_seen)}</span></div>
     </div>
-    <button class="btn ${to === 'guest' ? 'ghost' : 'lock'}" style="width:100%" onclick="changeRole(${i}, '${to}')">改成${ROLE_NAME[to]}</button>
-    <div class="infobox">${to === 'guest' ? '改成訪客後，他到門口只會通知你，不會再自動開門。' : '改成主人後，他用人臉＋手勢就能自動開門。'}
-      每次變更都要輸入 PIN，立即生效。</div>
-    <button class="btn danger" style="width:100%;margin-top:10px" onclick="confirmDelete(${i})">刪除這位成員</button>`);
+    <div class="sheet-label">管理</div>
+    <div class="sheet-card">
+      <button class="row link go" onclick="roleSheet(${i})">
+        <span>修改權限<small>變更主人 / 訪客、刪除成員資料</small></span><span class="v">›</span></button>
+    </div>`);
+}
+
+// 修改權限：iOS 風格滾輪選主人 / 訪客，沒有套用鍵 —— 離開這頁（‹ 返回、✕、點背景、Esc）時才生效：
+// 有改就跳出 PIN（每次變更都要 PIN），在 PIN 鍵盤按 ✕ 等於放棄。滾動時不送請求、不跳 PIN。
+const WHEEL_ROLES = ['master', 'guest'];
+const WHEEL_ROW = 40;
+let wheelSel = null;
+let roleLeave = null;          // 修改權限頁開著時：離開前先呼叫，回傳 true 表示已接手（要輸入 PIN）
+function roleSheet(i) {
+  const p = people[i];
+  wheelSel = p.role;
+  openSheet(`
+    <div class="sub-head"><button class="back" onclick="roleBack(${i})" aria-label="返回">‹</button><h3>修改權限</h3></div>
+    <div class="sheet-tools">${avatar(p, 'sm')}
+      <button class="info-btn" id="infoBtn" aria-label="主人和訪客的差別" aria-expanded="false" onclick="toggleRoleInfo()">i</button></div>
+    <div class="role-info" id="roleInfo" hidden>
+      <h3>主人和訪客有什麼不同？</h3>
+      <div class="role-card"><div class="rc-head"><span class="role master">主人</span><small>master</small></div>
+        <ul><li>人臉＋手勢（讚 / YA）通過就<b>自動開門</b></li>
+          <li>到門口不會發 LINE 通知</li>
+          <li>至少要留一位主人，否則沒有人能自動開門</li></ul></div>
+      <div class="role-card"><div class="rc-head"><span class="role guest">訪客</span><small>guest</small></div>
+        <ul><li>認得出來，但<b>永遠不會自動開門</b></li>
+          <li>到門口會發 LINE 通知「訪客在門口」，由你在手機上決定要不要開</li>
+          <li>同一位訪客 5 分鐘內只通知一次</li></ul></div>
+      <p class="ri-foot">不在名單上的人是陌生人：在門口逗留 5 秒會自動錄影並通知。<br>改了身分，離開這頁時輸入 PIN 就會生效。</p>
+      <button class="btn ghost" style="width:100%" onclick="toggleRoleInfo(false)">知道了</button>
+    </div>
+    <div class="wheel" role="listbox" aria-label="選擇身分">
+      <div class="wheel-band"></div>
+      <div class="wheel-list" id="wheelList">
+        <div class="wheel-pad"></div>
+        ${WHEEL_ROLES.map((r, k) => `<div class="wheel-item" role="option" data-k="${k}" onclick="wheelGo(${k})">
+          ${ROLE_NAME[r]}<small>${r}</small></div>`).join('')}
+        <div class="wheel-pad"></div>
+      </div>
+    </div>
+    <div class="wheel-desc" id="wheelDesc"></div>
+    <div class="danger-zone">
+      <button class="btn danger-text" onclick="confirmDelete(${i})">刪除成員資料</button>
+    </div>`);
+  roleLeave = (how) => {
+    if (wheelSel === p.role) return false;
+    changeRole(i, wheelSel, how);
+    return true;
+  };
+  const list = $('wheelList');
+  list.scrollTop = WHEEL_ROLES.indexOf(p.role) * WHEEL_ROW;
+  let raf = 0, idle = 0;
+  list.addEventListener('scroll', () => {
+    cancelAnimationFrame(raf); raf = requestAnimationFrame(() => wheelPaint(i));
+    clearTimeout(idle); idle = setTimeout(() => wheelPaint(i, true), 90);
+  }, { passive: true });
+  wheelPaint(i, true);
+}
+function roleBack(i) {
+  const leave = roleLeave;
+  roleLeave = null;
+  if (!(leave && leave('back'))) personSheet(i);
+}
+function toggleRoleInfo(show) {
+  const box = $('roleInfo'), btn = $('infoBtn');
+  if (!box) return;
+  const open = show === undefined ? box.hidden : show;
+  box.hidden = !open;
+  btn.setAttribute('aria-expanded', String(open));
+  btn.classList.toggle('on', open);
+}
+function wheelGo(k) { const list = $('wheelList'); if (list) list.scrollTo({ top: k * WHEEL_ROW, behavior: 'smooth' }); }
+function wheelPaint(i, settled = false) {
+  const list = $('wheelList');
+  if (!list) return;
+  const pos = list.scrollTop / WHEEL_ROW;
+  list.querySelectorAll('.wheel-item').forEach((el) => {
+    const d = Math.max(-2.2, Math.min(2.2, +el.dataset.k - pos));      // 離中心幾格
+    el.style.transform = `rotateX(${-d * 24}deg) translateZ(0)`;
+    el.style.opacity = String(Math.max(0.25, 1 - Math.abs(d) * 0.45));
+    el.classList.toggle('on', Math.abs(d) < 0.5);
+  });
+  const k = Math.max(0, Math.min(WHEEL_ROLES.length - 1, Math.round(pos)));
+  const role = WHEEL_ROLES[k];
+  if (role !== wheelSel && navigator.vibrate) navigator.vibrate(8);
+  wheelSel = role;
+  if (!settled) return;
+  const p = people[i], same = role === p.role;
+  const lastMaster = p.role === 'master' && role === 'guest' && people.filter((x) => x.role === 'master').length === 1;
+  // 身分說明放在 ⓘ 裡；這裡只在有改動時提醒怎麼生效
+  $('wheelDesc').innerHTML = same ? '' : '<span class="pending">離開這頁時輸入 PIN 即生效</span>' +
+    (lastMaster ? '<br><span class="warn">他是最後一位主人，改完沒有人能自動開門</span>' : '');
 }
 // 刪除前先顯示警告（不用 confirm()：LINE 內建瀏覽器可能擋掉），確認後再輸入 PIN
 function confirmDelete(i) {
@@ -473,7 +566,7 @@ function confirmDelete(i) {
     ${lastMaster && !last ? '<div class="warnbox">他是最後一位主人，刪除後沒有人能自動開門，只能用手機開。</div>' : ''}
     ${last ? '<div class="infobox">他是唯一的成員，不能刪除（門鎖至少要有一位成員才能啟動）。</div>' : ''}
     <div class="acts-2">
-      <button class="btn ghost" onclick="personSheet(${i})">取消</button>
+      <button class="btn ghost" onclick="roleSheet(${i})">取消</button>
       <button class="btn danger" ${last ? 'disabled' : ''} onclick="deleteMember(${i})">我了解，刪除</button>
     </div>`);
 }
@@ -486,14 +579,17 @@ function deleteMember(i) {
     done: (r) => { toast(r.message); renderPeople(); },
   });
 }
-function changeRole(i, role) {
+// how：'back' = 按 ‹ 離開（完成或放棄後回到成員詳情），'close' = 關閉抽屜
+function changeRole(i, role, how = 'close') {
   const p = people[i];
   const lastMaster = role === 'guest' && people.filter((x) => x.role === 'master').length === 1;
+  const reopen = () => { const k = people.findIndex((x) => x.name === p.name); if (k >= 0) personSheet(k); };
   askPin({
     title: `輸入 PIN 把 ${p.name} 改成${ROLE_NAME[role]}`,
-    note: lastMaster ? '他是最後一位主人，改完之後沒有人能自動開門' : '',
+    note: (lastMaster ? '他是最後一位主人，改完之後沒有人能自動開門。' : '') + '按 ✕ 放棄變更',
     submit: (pin) => Api.setRole(p.name, role, pin).catch((e) => ({ ok: false, message: e.message })),
-    done: (r) => { toast(r.message); renderPeople(); },
+    done: async (r) => { toast(r.message); await renderPeople(); if (how === 'back') reopen(); },
+    cancel: () => { toast(`沒有變更，${p.name} 仍是${ROLE_NAME[p.role]}`); if (how === 'back') reopen(); },
   });
 }
 
@@ -705,13 +801,21 @@ async function logout() {
    底部抽屜、PIN 鍵盤、提示
    ========================================================= */
 function openSheet(html) {
+  roleLeave = null;                                     // 換到別的抽屜內容（刪除警告、PIN 鍵盤…）就不再攔截關閉
   $('sheetBody').innerHTML = html;
   $('sheet').classList.add('show'); $('scrim').classList.add('show');
 }
 function closeSheet() {
+  if (roleLeave) {                                      // 修改權限頁：有改就先輸入 PIN，不直接關
+    const leave = roleLeave;
+    roleLeave = null;
+    if (leave('close')) return;
+  }
+  const cancel = pinFlow && pinFlow.cancel;             // PIN 鍵盤被關掉 = 放棄
   pinFlow = null;
   $('sheet').classList.remove('show'); $('scrim').classList.remove('show');
   setTimeout(() => { if (!$('sheet').classList.contains('show')) $('sheetBody').innerHTML = ''; }, 320);  // 清掉才會停止回放串流
+  if (cancel) setTimeout(cancel, 340);
 }
 $('scrim').addEventListener('click', closeSheet);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSheet(); });
