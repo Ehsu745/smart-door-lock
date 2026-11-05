@@ -37,3 +37,6 @@ pin.tmp
 *.task
 *.env
 !*.env.example
+
+# 產生的檔案
+dist/
