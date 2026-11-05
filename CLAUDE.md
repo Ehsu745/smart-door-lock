@@ -1,6 +1,6 @@
 # CLAUDE.md — 智慧門鎖交接文件
 
-給接手的 Claude Code 讀的。先讀完這份，再讀 `README.md`（使用說明）和 `docs/`（規劃）。
+給接手的 Claude Code 讀的。先讀完這份，再讀 `README.md`（使用說明）和 `docs/`（規劃、**硬體接線：`docs/03_硬體接線.md`**）。
 
 ---
 
@@ -11,13 +11,14 @@
 ```
 Pi Camera 3 NoIR ─▶ Raspberry Pi 5 (4GB) ──USB 序列埠──▶ Arduino UNO ─▶ 繼電器 ─▶ 電磁鎖
                          │
-                         └─ Flask 網頁（手機控制、紀錄、設定）── 之後：LINE 通知
+                         └─ Flask 網頁（手機控制、紀錄、設定）── LINE 通知
 ```
 
 - 人臉：Haar 偵測 + LBPH 辨識（距離 < 70 算認得），`master` 連續 8 幀通過 → 進手勢階段
 - 手勢：MediaPipe 0.10.18 Gesture Recognizer（模型下載失敗時改用 Hands + 規則），讚 / YA 連續 5 幀 → 開鎖
 - `guest` 永遠不自動開鎖，只通知；陌生人逗留 ≥ 5 秒 → 哨兵錄影
 - Arduino：送小寫 `unlock` / `lock` + `\n`，sketch 回 `Unlocked: ...` / `Locked`，8 秒後自動上鎖
+- 接線：UNO D7 → 低電位觸發繼電器 IN；鎖用獨立 12V 電源經繼電器 COM/NO（鎖的種類與 NO/NC 還沒確認），詳見 `docs/03_硬體接線.md`
 
 ## 2. 目前狀態（v2.5.0）
 
@@ -72,7 +73,7 @@ smartlock/
   cli.py               指令、run() 組裝所有元件
 tests/                 conftest.py 有 Harness（假辨識器 / 假手勢 / 假 Arduino / 假時鐘）
 deploy/                smartlock.service、install_service.sh、smartlock.env.example
-docs/                  01 居家助理未來規劃（概念階段）、02 智慧門鎖優化規劃
+docs/                  01 居家助理未來規劃（概念階段）、02 智慧門鎖優化規劃、03 硬體接線
 ```
 
 **不要破壞的規則**
