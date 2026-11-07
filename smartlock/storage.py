@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS records (
     duration     REAL NOT NULL DEFAULT 0,
     video        TEXT,                   -- 相對於 records 資料夾
     snapshot     TEXT,
-    min_distance REAL,                   -- 最小 LBPH 距離（越小越像已知的人）
+    min_distance REAL,                   -- 最小人臉距離（越小越像已知的人）
     notified     INTEGER NOT NULL DEFAULT 0,
     size_bytes   INTEGER NOT NULL DEFAULT 0,
     status       TEXT NOT NULL DEFAULT 'recording'    -- recording | done | failed

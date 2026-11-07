@@ -384,7 +384,6 @@ def test_delete_member_needs_pin_and_confirm(tmp_path):
 
 def test_delete_member_removes_photos_map_and_model(tmp_path):
     from smartlock.face import FaceRecognizer, read_map
-    from test_units import WholeImageDetector
     h, c, imgs = delete_client(tmp_path)
     c.post('/api/login', json={'pin': '4321'})
     r = c.post('/api/users/eric/delete', json={'pin': '4321', 'confirm': 'eric'})
@@ -396,9 +395,8 @@ def test_delete_member_removes_photos_map_and_model(tmp_path):
     assert 'member_deleted' in h.kinds()
     users = {u['name'] for u in c.get('/api/users').get_json()['users']}
     assert users == {'amy', 'ericson', 'kevin'}
-    # 重新訓練後的模型裡沒有 eric：他的臉不會再被認成 eric
+    # 重新登錄後的特徵裡沒有 eric：他的臉不會再被認成 eric
     rec = FaceRecognizer.load(h.cfg)
-    rec.detector = WholeImageDetector()
     assert all(r.person != 'eric' for r in rec.identify(imgs['eric']))
     assert rec.identify(imgs['amy'])[0].person == 'amy'
 
@@ -418,10 +416,8 @@ def test_cannot_delete_last_member(tmp_path):
 def test_delete_member_swaps_model_and_map_together(tmp_path):
     """真的 FaceRecognizer：刪除後編號重排，模型和名單要一起換，剩下的人還是認得出來。"""
     from smartlock.face import FaceRecognizer, delete_member
-    from test_units import WholeImageDetector
     h, _, imgs = delete_client(tmp_path)
     rec = FaceRecognizer.load(h.cfg)
-    rec.detector = WholeImageDetector()
     assert delete_member(h.cfg, rec, 'amy') == 3
     assert rec.identify(imgs['kevin'])[0].person == 'kevin'
     assert rec.identify(imgs['eric'])[0].person == 'eric'

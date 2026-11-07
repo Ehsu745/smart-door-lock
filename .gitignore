@@ -7,6 +7,7 @@ __pycache__/
 # 個人資料：人臉照片與模型（隱私，不上 GitHub）
 faces/
 face.yml
+face_feats.npz
 id_map.txt
 models/
 

@@ -125,7 +125,7 @@ class Sentinel:
                 self.buffer.append(copy)
 
     def _best(self, frame, strangers):
-        """截圖：保留臉最大（最清楚）的一幀；同時記錄最小 LBPH 距離。"""
+        """截圖：保留臉最大（最清楚）的一幀；同時記錄最小人臉距離。"""
         rec = self._rec
         area = max(f.box[2] * f.box[3] for f in strangers)
         dist = min(f.distance for f in strangers)

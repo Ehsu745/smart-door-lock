@@ -21,15 +21,15 @@ from smartlock.gesture import classify_landmarks
 # ==========================================
 def test_config_defaults_match_previous_version():
     c = Config.from_env({})
-    assert (c.threshold, c.required_frames, c.rearm_seconds, c.unlock_seconds) == (70.0, 8, 3.0, 8.0)
+    assert (c.threshold, c.required_frames, c.rearm_seconds, c.unlock_seconds) == (50.0, 8, 3.0, 8.0)
     assert c.allowed_gestures == ('Thumb_Up', 'Victory') and c.cmd_eol == '\n' and c.ack_strict
     assert c.enable_qr and not c.simulate and c.web_port == 5050
 
 
 def test_config_env_overrides():
-    c = Config.from_env({'FACE_THRESHOLD': '55', 'ALLOWED_GESTURES': 'Victory', 'CMD_EOL': 'none',
+    c = Config.from_env({'FACE_THRESHOLD': '40', 'ALLOWED_GESTURES': 'Victory', 'CMD_EOL': 'none',
                          'ARDUINO_STRICT': '0', 'REQUIRE_GESTURE': '0', 'SIM_ARDUINO': '1', 'CONTROL_PIN': '9'})
-    assert c.threshold == 55 and c.allowed_gestures == ('Victory',) and c.cmd_eol == ''
+    assert c.threshold == 40 and c.allowed_gestures == ('Victory',) and c.cmd_eol == ''
     assert not c.ack_strict and not c.require_gesture and c.simulate and c.control_pin == '9'
 
 
@@ -170,14 +170,6 @@ def test_qr_image_decodes():
 # ==========================================
 # 訓練與辨識（用合成影像，不需要真人照片）
 # ==========================================
-class WholeImageDetector:
-    """假偵測器：整張圖就是一張臉。"""
-
-    def detectMultiScale(self, gray, *args, **kwargs):
-        h, w = gray.shape[:2]
-        return [(0, 0, w, h)]
-
-
 def test_train_and_identify(tmp_path):
     cfg = Config(base=tmp_path)
     cfg.face_dir.mkdir()
@@ -193,8 +185,44 @@ def test_train_and_identify(tmp_path):
     mapping = read_map(cfg.map_file)
     assert sorted(mapping.values()) == [('amy', 'master'), ('eric', 'guest')]
 
+    assert cfg.feature_file.exists()
     rec = FaceRecognizer.load(cfg)
-    rec.detector = WholeImageDetector()
     result = rec.identify(people['amy'])[0]
     assert result.person == 'amy' and result.is_master and result.distance < cfg.threshold
     assert rec.identify(people['eric'])[0].is_guest
+    stranger = rec.identify(rng.integers(0, 255, (150, 150), dtype=np.uint8))[0]
+    assert not stranger.known and stranger.distance > cfg.threshold        # 沒登錄過的臉不能被認成任何人
+
+
+def test_load_builds_features_from_existing_photos(tmp_path):
+    """從 LBPH 版升級：只有 faces/ 和 id_map.txt（沒有 face_feats.npz），啟動時自動建立，身分設定不變。"""
+    cfg = Config(base=tmp_path)
+    cfg.face_dir.mkdir()
+    img = np.random.default_rng(3).integers(0, 255, (150, 150), dtype=np.uint8)
+    for i in range(3):
+        cv2.imwrite(str(cfg.face_dir / f'eric_{i}.jpg'), img)
+    cfg.map_file.write_text('0:eric:guest\n', encoding='utf-8')
+    (tmp_path / 'face.yml').write_text('舊的 LBPH 模型')
+    rec = FaceRecognizer.load(cfg)
+    assert cfg.feature_file.exists() and read_map(cfg.map_file) == {0: ('eric', 'guest')}
+    assert rec.identify(img)[0].is_guest
+    assert (tmp_path / 'face.yml').read_text() == '舊的 LBPH 模型'           # 舊檔不動
+
+
+def test_train_skips_photos_without_face(tmp_path):
+    cfg = Config(base=tmp_path)
+    cfg.face_dir.mkdir()
+    img = np.random.default_rng(4).integers(0, 255, (150, 150), dtype=np.uint8)
+    cv2.imwrite(str(cfg.face_dir / 'amy_0.jpg'), np.full((150, 150), 128, np.uint8))  # 找不到臉
+    cv2.imwrite(str(cfg.face_dir / 'eric_0.jpg'), img)
+    assert train(cfg) == {'amy': 0, 'eric': 1}
+    assert read_map(cfg.map_file) == {0: ('amy', 'master'), 1: ('eric', 'master')}    # 名單照樣保留，編號不變
+
+
+def test_small_faces_are_ignored(tmp_path):
+    cfg = Config(base=tmp_path)
+    cfg.face_dir.mkdir()
+    img = np.random.default_rng(5).integers(0, 255, (60, 60), dtype=np.uint8)
+    cv2.imwrite(str(cfg.face_dir / 'eric_0.jpg'), img)
+    train(cfg)
+    assert FaceRecognizer.load(cfg).identify(img) == []                   # 臉寬 60 < min_face 80

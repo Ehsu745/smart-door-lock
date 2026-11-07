@@ -2,13 +2,15 @@
 
 人臉 + 手勢雙重驗證門鎖。Raspberry Pi 5 + Camera Module 3 + Arduino UNO + 繼電器。
 
-指令跟舊版**完全一樣**（`capture` / `train` / `run` / `run --sim` / `qr` / `test-*`），已存的人臉與模型**不用重新訓練**。
+指令跟舊版**完全一樣**（`capture` / `train` / `run` / `run --sim` / `qr` / `test-*`），已存的人臉照片**不用重拍**。
+
+**v2.6 人臉辨識改用 YuNet + SFace**（OpenCV 內建的深度學習模型，取代 Haar + LBPH）。第一次啟動會自動下載兩個模型到 `models/`（約 39 MB），並用 `faces/` 既有照片建立 `face_feats.npz`，不用手動 train。距離門檻預設 50（越小越像），舊設定 `FACE_THRESHOLD=70` 要拿掉。
 
 ---
 
 ## 從舊版升級（Pi 上）
 
-在 Mac 把整個資料夾傳過去（`faces/`、`face.yml`、`id_map.txt`、`models/` 不會被動到）：
+在 Mac 把整個資料夾傳過去（`faces/`、`face_feats.npz`、`id_map.txt`、`models/` 不會被動到；舊的 `face.yml` 已不使用，留著無妨）：
 
 ```bash
 scp -r smartlock app.py tests deploy requirements*.txt .gitignore \
@@ -73,7 +75,7 @@ bash deploy/install_service.sh --desktop # 登入桌面後在 Pi 螢幕顯示視
 - **按住鎖 1 秒才開門**，避免誤觸；「立即上鎖」和「自動解鎖」開關分開。
 - 輸入一次 PIN 後，這支手機在本次啟動期間都不用再輸入；改 PIN 後所有手機都要重新輸入。
 - **例外：變更主人 / 訪客每次都要重新輸入 PIN**，已登入也不算數；改完寫回 `id_map.txt`，下一幀就生效，重新 train 也會保留。
-- **刪除成員**：成員頁點進某人 →「刪除這位成員」→ 警告「此操作無法復原」→ 輸入 PIN。會永久刪除他的照片並自動重新訓練，不用重新啟動；唯一的成員不能刪。
+- **刪除成員**：成員頁點進某人 →「刪除這位成員」→ 警告「此操作無法復原」→ 輸入 PIN。會永久刪除他的照片並自動重新登錄特徵，不用重新啟動；唯一的成員不能刪。
 - PIN 來源：`pin.json`（網頁或 `python app.py set-pin` 設定，PBKDF2 雜湊、權限 600）優先，其次是 `smartlock.env` 的 `CONTROL_PIN`。
 - 沒有 PIN 的手機按開鎖只會跳出鍵盤，不算 PIN 錯誤，不會觸發鎖定。
 - 預覽版面不用接 Pi：直接雙擊 `smartlock/web/templates/index.html`，會自動進入示範模式（示範 PIN 1234）。
@@ -106,7 +108,7 @@ smartlock/
   security.py          PIN 雜湊儲存、smartlock.env 載入
   line.py              LINE 額度查詢 + 通知（訪客、陌生人錄影、開鎖失敗；背景發送）
   door.py              狀態機（人臉 → 手勢 → 開鎖），不碰硬體，可單獨測試
-  face.py              人臉偵測、辨識、採集、訓練
+  face.py              人臉偵測（YuNet）、辨識（SFace）、採集、登錄
   gesture.py           MediaPipe 手勢（含備援規則）
   arduino.py           序列埠協定（+ 模擬 Arduino）
   camera.py            rpicam / Picamera2 / USB 相機
@@ -128,4 +130,4 @@ arduino/door_lock/     學弟的 Arduino sketch
 - **容量管理**：依容量 / 天數 / SD 剩餘空間自動刪最舊的、中斷的錄影標成不完整、路徑不能跑出 records 資料夾。
 - **PIN 與登入**：雜湊不存明碼、檔案權限 600、檔案優先於 CONTROL_PIN、set-pin 後執行中系統自動套用、改 PIN 後其他手機失效、沒附 PIN 不算錯誤。
 - **新 API**：成員與頭像、設定、時間軸附錄影資訊（已刪除的錄影會標示）、LINE 額度快取與 token 錯誤。
-- **其他**：設定讀取（含 smartlock.env）、手勢規則、QR code 可解碼、訓練保留 guest 分類。
+- **其他**：設定讀取（含 smartlock.env）、手勢規則、QR code 可解碼、登錄保留 guest 分類、舊資料自動建立特徵。

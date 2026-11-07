@@ -14,13 +14,20 @@ Pi Camera 3 NoIR ─▶ Raspberry Pi 5 (4GB) ──USB 序列埠──▶ Arduin
                          └─ Flask 網頁（手機控制、紀錄、設定）── LINE 通知
 ```
 
-- 人臉：Haar 偵測 + LBPH 辨識（距離 < 70 算認得），`master` 連續 8 幀通過 → 進手勢階段
+- 人臉：YuNet 偵測 + SFace 128 維特徵（v2.6 起，取代 Haar + LBPH），距離 =（1 − cosine）× 100 < 50 算認得，`master` 連續 8 幀通過 → 進手勢階段
 - 手勢：MediaPipe 0.10.18 Gesture Recognizer（模型下載失敗時改用 Hands + 規則），讚 / YA 連續 5 幀 → 開鎖
 - `guest` 永遠不自動開鎖，只通知；陌生人逗留 ≥ 5 秒 → 哨兵錄影
 - Arduino：送小寫 `unlock` / `lock` + `\n`，sketch 回 `Unlocked: ...` / `Locked`，8 秒後自動上鎖
 - 接線：UNO D7 → 低電位觸發繼電器 IN；鎖用獨立 12V 電源經繼電器 COM/NO（鎖的種類與 NO/NC 還沒確認），詳見 `docs/03_硬體接線.md`
 
-## 2. 目前狀態（v2.5.0）
+## 2. 目前狀態（v2.6.0）
+
+**v2.6 人臉辨識改版（2026-11-05）**：學弟 demo 時陌生人被認成 eric。用 LFW 5,524 位陌生人比較（單幀）：LBPH 門檻 70 誤認 8.6%；SFace 門檻 50 為 0%（門檻 55 時 1000 人中 1 人）。LBPH 誤認最嚴重的人多數沒戴眼鏡 → 主因是 LBPH 本身，眼鏡是次要。
+- 使用者決定：**只用 Pi 自己拍的照片**、**不做 LBPH / SFace 切換**。PC 端訓練、PIN 開門後回收照片（需防模板污染）是之後居家助理的方向，還沒做
+- `train` 不訓練網路，只把 `faces/` 照片轉成特徵存 `face_feats.npz`；沒有這個檔時 `FaceRecognizer.load` 自動建立（舊資料免重拍）
+- 模型自動下載到 `models/`（huggingface opencv/…，有 SHA-256 檢查）；OpenCV 需 ≥ 4.8
+- 辨識和登錄都用灰階（舊照片是灰階 Haar 裁切）；capture 現在裁切時多留 1/4 邊
+- **還沒在 Pi 上實測**：速度（Pi 5 / Pi 4）、門口光線下本人的距離分布、戴與不戴眼鏡
 
 | 優化規劃項目 | 狀態 |
 |---|---|
@@ -46,7 +53,7 @@ Pi Camera 3 NoIR ─▶ Raspberry Pi 5 (4GB) ──USB 序列埠──▶ Arduin
 
 ```bash
 source .venv/bin/activate
-python -m pytest -q                 # 119 個測試，不需要相機或 Arduino（Mac：115 passed, 4 skipped，序列埠 pty 測試只在 Linux 跑）
+python -m pytest -q                 # 122 個測試，不需要相機、Arduino 或人臉模型（conftest 的 FakeFaceEngine）（Mac：118 passed, 4 skipped，序列埠 pty 測試只在 Linux 跑）
 python app.py run --sim             # 完整系統，用模擬 Arduino
 python app.py records | cleanup | set-pin | test-camera | test-gesture | test-arduino | test-line
 # 只看版面（不用 Pi）：python tools/preview_web.py → http://localhost:8800（手機用區網 IP），自動示範模式，PIN 1234
@@ -63,7 +70,7 @@ smartlock/
   security.py          PinStore（PBKDF2，pin.json 0600）、load_env_file（自動讀 smartlock.env）
   events.py            EventBus：狀態機只發事件，其他模組訂閱
   door.py              DoorSystem 狀態機；process_frame() 可注入 clock，測試用假時鐘逐幀跑
-  face.py              偵測、辨識、capture、train、set_role（改 id_map.txt 並熱更新 mapping）
+  face.py              FaceEngine（YuNet+SFace，測試換成假的：make_engine）、辨識、capture、train（登錄特徵）、set_role
   gesture.py / arduino.py / camera.py / display.py / qr.py
   sentinel.py          哨兵：預錄緩衝、固定幀率取樣（迴圈慢時補幀）、背景寫檔 MJPG .avi
   storage.py           SQLite（records / events / presence）+ 容量管理（天數 / 總量 / SD 剩餘）
@@ -73,11 +80,11 @@ smartlock/
   cli.py               指令、run() 組裝所有元件
 tests/                 conftest.py 有 Harness（假辨識器 / 假手勢 / 假 Arduino / 假時鐘）
 deploy/                smartlock.service、install_service.sh、smartlock.env.example
-docs/                  01 居家助理未來規劃（概念階段）、02 智慧門鎖優化規劃、03 硬體接線
+docs/                  01 居家助理未來規劃（概念階段）、02 智慧門鎖優化規劃、03 硬體接線、04 人臉辨識改版 v2.6（LBPH → SFace 的比較與改動）
 ```
 
 **不要破壞的規則**
-- **使用者既有資料不能要求重新訓練**：`faces/`、`face.yml`、`id_map.txt`（格式 `編號:名字:master|guest`）、`models/` 必須相容。`train` 會保留既有的 guest/master 設定。
+- **使用者既有資料不能要求重拍**：`faces/`、`id_map.txt`（格式 `編號:名字:master|guest`）、`models/` 必須相容；`face_feats.npz` 可隨時從 `faces/` 重建；舊 `face.yml` 不再使用但不要刪。`train` 會保留既有的 guest/master 設定。
 - **重新允許自動開鎖的條件**：鏡頭裡沒有臉持續 3 秒。使用者明確說過不要改這個規則。
 - **guest 永遠不自動開鎖**。
 - **測試不能碰專案資料夾**：Harness 會把 `Config.base` 換成暫存目錄（Pi 上可能有真的 `pin.json`、`records/`）。
@@ -89,7 +96,7 @@ docs/                  01 居家助理未來規劃（概念階段）、02 智慧
 - 來源優先順序：`pin.json`（雜湊）> `smartlock.env` 的 `CONTROL_PIN` > 無
 - 輸入一次後同手機免再輸入（session，改 PIN 後全部失效）；沒附 PIN 回 401 不算錯誤
 - **變更主人/訪客每次都要 PIN，已登入也不算**（使用者明確要求）；錯誤鎖定仍保留
-- **刪除成員**同樣每次都要 PIN，而且前端要先顯示「此操作無法復原」警告（使用者明確要求）；API 需帶 `confirm=<名字>`；不能刪最後一位成員。`face.delete_member` 先移出名單 → 刪照片 → 重新 train → `FaceRecognizer.swap()` 同時換模型和名單（編號會重排）
+- **刪除成員**同樣每次都要 PIN，而且前端要先顯示「此操作無法復原」警告（使用者明確要求）；API 需帶 `confirm=<名字>`；不能刪最後一位成員。`face.delete_member` 先移出名單 → 刪照片 → 重新 train → `FaceRecognizer.swap()` 同時換特徵和名單（編號會重排）
 
 ## 5. LINE 通知（v2.5 已實作，以下為規格）
 
@@ -147,13 +154,14 @@ docs/                  01 居家助理未來規劃（概念階段）、02 智慧
 |---|---|
 | 網站「常當掉、Pi 還在跑」 | v2.2.1 修掉（串流佔滿瀏覽器連線）。若再發生：Pi 上 `curl localhost:5050/api/health`，有回應就是網路問題（熱點休眠、IP 變、Wi-Fi 省電） |
 | 主人站在門口不比手勢，每 11 秒記一筆「手勢逾時」 | 前端已合併顯示（×N）；後端照記 |
-| 同一人在 master / Unknown 間跳動 | 在門口實際光線重拍，距離穩定 < 50 再上線 |
+| 同一人在 master / Unknown 間跳動 | LBPH 時代的問題；v2.6 改 SFace 後待 Pi 實測。仍發生就在門口光線補拍（戴 / 不戴眼鏡都拍） |
+| 陌生人被認成成員（2026-11-05 demo） | v2.6 改 SFace 修正；Pi 上待驗證 |
 | NoIR 畫面偏紫 | 不影響辨識；手勢不夠準改 USB 相機 |
 | SD 卡曾裂過、重灌 | 用 `sudo poweroff` 關機、5V/5A 電源，長期考慮 USB SSD |
 | Wi-Fi 省電可能讓 Pi 斷線 | `nmcli connection modify <連線> 802-11-wireless.powersave 2` |
 
 ## 9. 隱私與機密
 
-- 不要 commit：`faces/`、`face.yml`、`id_map.txt`、`models/`、`records/`、`pin.json`、`smartlock.env`（都在 `.gitignore`）；`.gitignore` 另外擋掉任何位置的 `*.db*`、`*.sqlite*`、`*.avi`、`*.mp4`、`*.task`、`*.env`（`*.env.example` 除外）
+- 不要 commit：`faces/`、`face.yml`、`face_feats.npz`、`id_map.txt`、`models/`、`records/`、`pin.json`、`smartlock.env`（都在 `.gitignore`）；`.gitignore` 另外擋掉任何位置的 `*.db*`、`*.sqlite*`、`*.avi`、`*.mp4`、`*.task`、`*.env`（`*.env.example` 除外）
 - 紀錄頁、成員頁、設定頁都需要 PIN（含人臉影像）
 - 大型語言模型或任何自動化**不能自己開鎖**（居家助理規劃的原則）

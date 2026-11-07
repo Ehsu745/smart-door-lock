@@ -4,6 +4,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
@@ -32,6 +33,31 @@ def face(person='eric', kind='master', label=0, distance=40.0, known=True):
 MASTER = face()
 GUEST = face('amy', 'guest', label=1)
 STRANGER = face('Unknown', 'Stranger', label=2, distance=120.0, known=False)
+
+
+class FakeFaceEngine:
+    """假 YuNet + SFace：整張圖就是一張臉；特徵 = 縮成 16×8 的像素。
+    同一張圖特徵幾乎相同，不同的隨機雜訊圖彼此幾乎正交；全平的圖當作找不到五官。"""
+
+    def detect(self, bgr):
+        h, w = bgr.shape[:2]
+        return np.array([[0, 0, w, h] + [0] * 10 + [1.0]], np.float32)
+
+    def feature(self, img, face_row=None):
+        g = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        v = cv2.resize(g, (16, 8), interpolation=cv2.INTER_AREA).astype(np.float32).ravel()
+        v -= v.mean()
+        return v / (np.linalg.norm(v) + 1e-9)
+
+    def embed_photo(self, gray):
+        return None if gray.std() < 1 else self.feature(gray)
+
+
+@pytest.fixture(autouse=True)
+def fake_face_engine(monkeypatch):
+    """所有測試都用假的人臉引擎：不需要下載模型，也不碰專案的 models/。"""
+    import smartlock.face as face_module
+    monkeypatch.setattr(face_module, 'make_engine', lambda cfg: FakeFaceEngine())
 
 
 class FakeRecognizer:

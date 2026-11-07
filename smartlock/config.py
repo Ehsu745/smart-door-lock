@@ -6,11 +6,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Tuple
 
-# 專案根目錄：資料（faces/、face.yml、id_map.txt、models/）都放在這裡
+# 專案根目錄：資料（faces/、face_feats.npz、id_map.txt、models/）都放在這裡
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 GESTURE_MODEL_URL = ('https://storage.googleapis.com/mediapipe-models/gesture_recognizer/'
                      'gesture_recognizer/float16/latest/gesture_recognizer.task')
+
+# 人臉模型（OpenCV Zoo，Apache-2.0）：檔名 → (下載網址, SHA-256)。順序固定：偵測、辨識
+FACE_MODELS = {
+    'face_detection_yunet_2023mar.onnx': (
+        'https://huggingface.co/opencv/face_detection_yunet/resolve/main/face_detection_yunet_2023mar.onnx',
+        '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4'),
+    'face_recognition_sface_2021dec.onnx': (
+        'https://huggingface.co/opencv/face_recognition_sface/resolve/main/face_recognition_sface_2021dec.onnx',
+        '0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79'),
+}
 
 # 純文字標籤（Pi 的終端機 / 瀏覽器預設沒有 emoji 字型）
 GESTURE_LABEL = {'Thumb_Up': '讚(Thumb_Up)', 'Thumb_Down': '倒讚(Thumb_Down)', 'Victory': 'YA(Victory)',
@@ -30,10 +40,10 @@ class Config:
 
     # ---- 人臉 ----
     frame_size: Tuple[int, int] = (640, 480)
-    face_size: Tuple[int, int] = (200, 200)       # 訓練與辨識前統一尺寸
     min_face: Tuple[int, int] = (80, 80)
     capture_count: int = 30
-    threshold: float = 70.0                       # LBPH 距離，越低越像
+    threshold: float = 50.0                       # SFace 距離 =（1 − cosine）× 100，越低越像；50 = cosine 0.5
+    face_score: float = 0.6                       # YuNet 偵測信心值，低於此不算一張臉
     required_frames: int = 8                      # 同一人連續通過幾幀才算通過
     rearm_seconds: float = 3.0                    # 人離開鏡頭幾秒後才允許再次自動開鎖
 
@@ -107,8 +117,12 @@ class Config:
         return self.base / 'faces'
 
     @property
-    def model_file(self) -> Path:
-        return self.base / 'face.yml'
+    def models_dir(self) -> Path:
+        return self.base / 'models'
+
+    @property
+    def feature_file(self) -> Path:
+        return self.base / 'face_feats.npz'
 
     @property
     def map_file(self) -> Path:
@@ -116,7 +130,7 @@ class Config:
 
     @property
     def gesture_model(self) -> Path:
-        return self.base / 'models' / 'gesture_recognizer.task'
+        return self.models_dir / 'gesture_recognizer.task'
 
     def cmd_text(self, command: str) -> str:
         return {'UNLOCK': self.cmd_unlock, 'LOCK': self.cmd_lock}[command]
@@ -134,7 +148,8 @@ class Config:
             raise ValueError(f'CMD_EOL 只能是 {"/".join(_EOL)}，目前是 {eol!r}')
         return cls(
             base=Path(base) if base else PROJECT_ROOT,
-            threshold=float(env.get('FACE_THRESHOLD', 70)),
+            threshold=float(env.get('FACE_THRESHOLD', 50)),
+            face_score=float(env.get('FACE_SCORE', 0.6)),
             arduino_port=env.get('ARDUINO_PORT') or None,
             baud=int(env.get('ARDUINO_BAUD', 9600)),
             cmd_unlock=env.get('CMD_UNLOCK', 'unlock'),

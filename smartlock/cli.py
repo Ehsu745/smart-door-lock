@@ -3,7 +3,7 @@
 用法（在專案資料夾，先 source .venv/bin/activate）：
   python app.py                 互動選單
   python app.py capture yang    採集 yang 的人臉 30 張
-  python app.py train           以 faces/ 訓練 LBPH 模型
+  python app.py train           以 faces/ 的照片登錄人臉特徵（SFace）
   python app.py run             啟動辨識 + 網頁控制台 + Arduino 控制
   python app.py run --sim       同上，但不接 Arduino，用文字模擬開鎖/上鎖
   python app.py test-camera     只測相機：FPS、人臉偵測、辨識距離，存 camera_test.jpg
@@ -36,7 +36,7 @@ from .config import GESTURE_LABEL, Config
 from .display import display_loop, draw_bar, draw_label, has_display, want_window
 from .door import DoorSystem
 from .events import EventBus
-from .face import FaceRecognizer, capture, load_detector, train
+from .face import FaceRecognizer, capture, make_engine, train
 from .gesture import GestureDetector, draw_hand
 from .config import PROJECT_ROOT
 from .qr import control_url, print_qr
@@ -174,8 +174,8 @@ def test_arduino(cfg: Config):
 
 def test_camera(cfg: Config, seconds: float = 10):
     """測相機 FPS、人臉偵測；已訓練時也顯示辨識結果，最後存一張 camera_test.jpg。"""
-    recognizer = FaceRecognizer.load(cfg) if cfg.model_file.exists() and cfg.map_file.exists() else None
-    detector = None if recognizer else load_detector(cfg)
+    recognizer = FaceRecognizer.load(cfg) if cfg.map_file.exists() and cfg.face_dir.exists() else None
+    engine = None if recognizer else make_engine(cfg)
     camera = Camera(cfg)
     reader = FrameReader(camera)
     frames, last_print, start, frame = 0, 0.0, time.monotonic(), None
@@ -190,9 +190,9 @@ def test_camera(cfg: Config, seconds: float = 10):
             if recognizer:
                 results = recognizer.identify(gray)
                 boxes = [r.box for r in results]
-                texts = [f'{r.person if r.distance < cfg.threshold else "Unknown"}(距離 {r.distance:.0f})' for r in results]
+                texts = [f'{r.person if r.known else "Unknown"}(距離 {r.distance:.0f})' for r in results]
             else:
-                boxes = list(detector.detectMultiScale(gray, 1.2, 5, minSize=cfg.min_face))
+                boxes = [tuple(int(v) for v in f[:4]) for f in engine.detect(frame)]
                 texts = []
             for x, y, w, h in boxes:
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
