@@ -64,8 +64,19 @@
 
       <!-- 2. 成員 -->
       <section class="page" id="p-people" aria-label="成員">
-        <h2>成員</h2>
+        <div class="page-head"><h2>成員</h2>
+          <button class="info-btn" id="peopleInfoBtn" aria-label="主人和訪客的差別" aria-expanded="false"
+            onclick="toggleInfo('peopleInfo', 'peopleInfoBtn')">i</button></div>
         <div class="scroll" id="peopleList"></div>
+        <div class="role-info page-info" id="peopleInfo" hidden>
+          <div class="role-card"><div class="rc-head"><span class="role master">主人</span><small>master</small></div>
+            <ul><li>人臉＋手勢通過就會<b>自動開門</b></li>
+              <li>手勢可以在成員詳情的「開鎖手勢」各自綁定；沒綁定就用讚 / YA</li></ul></div>
+          <div class="role-card"><div class="rc-head"><span class="role guest">訪客</span><small>guest</small></div>
+            <ul><li>只會通知你有人在門口，<b>不會自動開門</b></li></ul></div>
+          <p class="ri-foot">點成員可以看資料、修改權限、設定開鎖手勢（變更都要輸入 PIN）。</p>
+          <button class="btn ghost" style="width:100%" onclick="toggleInfo('peopleInfo', 'peopleInfoBtn', false)">知道了</button>
+        </div>
       </section>
 
       <!-- 3. 紀錄 -->

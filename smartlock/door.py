@@ -1,7 +1,9 @@
 """DoorSystem：門鎖狀態機。
 
     face    ：等待 master 人臉連續通過 required_frames 幀
-    gesture ：人臉通過後，gesture_window 秒內比出 allowed_gestures 之一（連續 gesture_frames 幀）→ 開鎖
+    gesture ：人臉通過後，gesture_window 秒內比出他綁定的手勢（gestures.json；沒綁定用 allowed_gestures 之一），
+              連續 gesture_frames 幀 → 開鎖；比錯的幀數累計 gesture_wrong_frames → 失敗並冷卻（防止輪流試）
+              綁定的手勢是第二道密碼：門口畫面、狀態、事件文字都不寫出是哪一個
     guest   ：只通知「偵測到訪客，建議開鎖」，不會自動開鎖
 
 require_gesture=False 或沒有手勢偵測器時，master 人臉通過就直接開鎖。
@@ -44,6 +46,7 @@ class DoorSystem:
         self.frame_hooks = []                # 每幀呼叫 hook(frame, faces, now)，例如哨兵錄影
         self.providers = {}                  # 名稱 → 回傳 dict 的函式，結果併入 snapshot()（網頁狀態）
         self.pins = None                     # PinStore；None = 只看 cfg.control_pin（測試用）
+        self.bindings = None                 # GestureBindings；None = 所有人都用 cfg.allowed_gestures
         self.info = {}                       # 相機、手勢模式等靜態資訊，給網頁「設定」
 
         self.guard = threading.Lock()
@@ -54,7 +57,8 @@ class DoorSystem:
         self.state = {'name': NO_FACE, 'category': '', 'distance': None,
                       'auto': True, 'message': '啟動中',
                       'require_gesture': cfg.require_gesture, 'phase': 'face', 'countdown': None,
-                      'gesture': None, 'gesture_score': None, 'target': None, 'visitor': None, 'visitor_since': None,
+                      'gesture': None, 'gesture_score': None, 'target': None, 'target_bound': False,
+                      'visitor': None, 'visitor_since': None,
                       'allowed': cfg.gesture_labels()}
 
         # ---- 狀態機內部狀態 ----
@@ -73,6 +77,9 @@ class DoorSystem:
         self._last_seen = 0.0
         self._g_streak = 0
         self._g_last = None
+        self._required = set(cfg.allowed_gestures)   # 這次驗證接受的手勢
+        self._bound = False                  # 這次的主人有綁定手勢
+        self._wrong = 0                      # 這次驗證比錯手勢的累計幀數
         self._cooldown_until = 0.0
         self._v_label = None                 # 訪客偵測
         self._v_streak = 0
@@ -174,11 +181,15 @@ class DoorSystem:
             except Exception:
                 log.exception('frame hook 失敗')
 
+        # 綁定手勢時狀態 API 不給目前看到的手勢：開鎖那一刻看到的就是答案（/api/status 不需要登入）。
+        # 用 _bound 而不是 phase 判斷：開鎖那一幀已經切回 face 階段，但 g_name 還是剛比出的綁定手勢
+        hide = self._bound or g_name is None
         self.update(name=name, category=category,
                     distance=None if best is None else round(float(best), 1),
-                    phase=self._phase, gesture=g_name,
+                    phase=self._phase, gesture=None if hide else g_name,
                     target=self._target_name if self._phase == 'gesture' else None,
-                    gesture_score=None if g_score is None else round(float(g_score), 2),
+                    target_bound=self._bound if self._phase == 'gesture' else False,
+                    gesture_score=None if hide or g_score is None else round(float(g_score), 2),
                     countdown=round(max(0.0, self._deadline - now), 1) if self._phase == 'gesture' else None)
         return frame
 
@@ -233,26 +244,39 @@ class DoorSystem:
                     self._phase, self._target, self._target_name = 'gesture', self._candidate, name
                     self._deadline, self._last_seen, self._g_streak, self._g_last = now + cfg.gesture_window, now, 0, None
                     self._attempt = att['attempt']
-                    self.emit('face_passed', f'人臉通過 {name} → 請比出手勢：' + ' 或 '.join(cfg.gesture_labels()),
-                              **att)
+                    bound = self.bindings.get(name) if self.bindings is not None else None
+                    self._required = {bound} if bound else set(cfg.allowed_gestures)
+                    self._bound, self._wrong = bool(bound), 0
+                    hint = '請比出綁定手勢' if bound else '請比出手勢：' + ' 或 '.join(cfg.gesture_labels())
+                    self.emit('face_passed', f'人臉通過 {name} → {hint}', **att)
         elif self._phase == 'gesture':
             if accepted == self._target:
                 self._last_seen = now
             g_name, g_score, pts = self.gesture.detect(frame)
-            ok_g = g_name in cfg.allowed_gestures and g_score >= cfg.gesture_score
+            confident = bool(g_name) and g_name != 'None' and g_score >= cfg.gesture_score
+            ok_g = confident and g_name in self._required
             if pts:
-                draw_hand(frame, pts, ok_g)
+                draw_hand(frame, pts)
             self._g_streak = self._g_streak + 1 if ok_g and g_name == self._g_last else (1 if ok_g else 0)
             self._g_last = g_name if ok_g else None
+            if confident and not ok_g:
+                self._wrong += 1                  # 累計，不是連續：輪流試每個只比幾幀也會被抓到
             left = self._deadline - now
-            hint = f'Show {" / ".join(cfg.allowed_gestures)}  {max(0, left):.0f}s'
-            cv2.putText(frame, hint, (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 220, 255), 2)
-            if g_name:
+            # 綁定手勢時不顯示該比哪個，也不顯示目前看到的手勢（畫面會串流到手機）
+            want = 'your gesture' if self._bound else ' / '.join(cfg.allowed_gestures)
+            cv2.putText(frame, f'Show {want}  {max(0, left):.0f}s', (16, 36), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8, (0, 220, 255), 2)
+            if g_name and not self._bound:
                 cv2.putText(frame, f'{g_name} {g_score:.2f}', (16, 66), cv2.FONT_HERSHEY_SIMPLEX,
-                            0.8, (0, 220, 0) if ok_g else (0, 160, 255), 2)
-            if self._g_streak >= cfg.gesture_frames:
+                            0.8, (0, 200, 255), 2)
+            if self._wrong >= cfg.gesture_wrong_frames:
+                self._phase, self._cooldown_until = 'face', now + cfg.retry_cooldown
+                self.emit('gesture_wrong', f'{self._target_name} 手勢不正確，{cfg.retry_cooldown:.0f} 秒後可重試',
+                          name=self._target_name, attempt=self._attempt)
+            elif self._g_streak >= cfg.gesture_frames:
                 self._armed, self._phase = False, 'face'
-                self.door('UNLOCK', f'人臉 {self._target_name} + 手勢 {GESTURE_LABEL.get(g_name, g_name)}',
+                how = '綁定手勢' if self._bound else f'手勢 {GESTURE_LABEL.get(g_name, g_name)}'
+                self.door('UNLOCK', f'人臉 {self._target_name} + {how}',
                           attempt=self._attempt, name=self._target_name)
             elif now - self._last_seen > cfg.face_grace:
                 self._phase = 'face'

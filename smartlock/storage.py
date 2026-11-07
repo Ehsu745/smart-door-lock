@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS attempts (
     name      TEXT NOT NULL,             -- 被認成誰
     distance  REAL,                      -- 連續通過那幾幀中最小的 SFace 距離
     crop      TEXT,                      -- 人臉裁切圖（相對於 records 資料夾），過期會刪
-    outcome   TEXT NOT NULL DEFAULT 'pending',   -- pending | unlocked | timeout | cancelled | door_failed
+    outcome   TEXT NOT NULL DEFAULT 'pending',   -- pending | unlocked | timeout | cancelled | door_failed | gesture_wrong
     reported  INTEGER NOT NULL DEFAULT 0 -- 1 = 主人回報「這不是他」
 );
 CREATE INDEX IF NOT EXISTS idx_attempts_name ON attempts(name);

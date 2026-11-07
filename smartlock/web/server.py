@@ -5,7 +5,7 @@
   /api/action                     unlock / lock / auto_on / auto_off（需登入或附 PIN）
   /video_feed                     即時影像 MJPEG
   /api/session、/api/login、/api/logout、/api/pin（變更 PIN）
-  /api/users、/api/users/<name>/photo、/api/users/<name>/role、/api/users/<name>/delete（後兩者每次都要 PIN）
+  /api/users、/api/users/<name>/photo、/api/users/<name>/role|gesture|delete（後三者每次都要 PIN）、/api/gestures
   /api/attempts/<id>/crop.jpg、/api/attempts/<id>/report|undo、/api/users/<name>/threshold/reset（後三者每次都要 PIN）
   /api/events、/api/records、/records/<id>/play|snapshot.jpg|download、DELETE /api/records/<id>
   /api/settings
@@ -22,13 +22,16 @@ import time
 from pathlib import Path
 
 from .. import __version__
+from ..bindings import GESTURES, GestureBindings
+from ..config import GESTURE_LABEL
 from ..face import ROLES, delete_member, photos_of as face_photos, set_role
 from ..security import PIN_RULE, PinStore
 
 WEB_DIR = Path(__file__).resolve().parent
 
 # 時間軸上可以回報誤認的事件（一次嘗試只在最後結果那筆顯示，face_passed 不重複顯示）
-ATTEMPT_EVENTS = ('unlock', 'gesture_timeout', 'gesture_cancel', 'door_failed')
+# gesture_wrong：人臉過了但手勢錯 = 可能是冒充者，主人最該看的一筆
+ATTEMPT_EVENTS = ('unlock', 'gesture_timeout', 'gesture_cancel', 'door_failed', 'gesture_wrong')
 
 MAX_FAILS = 5
 LOCKOUT_SECONDS = 60.0
@@ -138,6 +141,9 @@ def create_web(system, storage=None, line=None, notifier=None, hardening=None):
     if system.pins is None:
         system.pins = PinStore(cfg.pin_file, cfg.control_pin)
     store = system.pins
+    if system.bindings is None:
+        system.bindings = GestureBindings(cfg.gestures_file)
+    bindings = system.bindings
     app = Flask(__name__, static_folder=str(WEB_DIR / 'static'), static_url_path='/static')
     app.secret_key = os.urandom(32)                               # 重新啟動後需要重新輸入 PIN
     app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Strict')
@@ -317,9 +323,10 @@ def create_web(system, storage=None, line=None, notifier=None, hardening=None):
         seen = storage.last_seen() if storage is not None else {}
         reports = storage.report_counts() if storage is not None else {}
         thr = getattr(system.recognizer, 'threshold_for', None)
+        bound = bindings.all()                   # 只有登入後的成員頁看得到；門口與 /api/status 不給
         out = [{'name': n, 'role': k, 'photos': len(photos_of(n)), 'last_seen': seen.get(n),
                 'threshold': thr(n) if thr else cfg.threshold, 'default_threshold': cfg.threshold,
-                'reports': reports.get(n, 0)}
+                'reports': reports.get(n, 0), 'gesture': bound.get(n)}
                for n, k in sorted(members().items())]
         return jsonify(users=out)
 
@@ -344,6 +351,32 @@ def create_web(system, storage=None, line=None, notifier=None, hardening=None):
         masters = sum(1 for k in members().values() if k == 'master')
         return jsonify(success=True, message=f'{name} 已改成{label[role]}', masters=masters)
 
+    @app.route('/api/users/<name>/gesture', methods=['POST'])
+    def user_gesture(name):
+        """綁定開鎖手勢；gesture 為 null 代表取消綁定（回到預設的讚 / YA）。每次都要 PIN。"""
+        need_login()
+        data = request.get_json(silent=True) or {}
+        refused = pin_every_time(data)
+        if refused:
+            return refused
+        gesture = data.get('gesture') or None
+        if gesture is not None and gesture not in GESTURES:
+            return jsonify(success=False, message='不支援這個手勢'), 400
+        if name not in members():
+            abort(404)
+        changed = bindings.get(name) != gesture
+        bindings.set(name, gesture)
+        if changed:   # 事件紀錄不寫出手勢本身：看得到紀錄的人不一定是本人
+            system.emit('gesture_changed', f'網頁{"設定" if gesture else "取消"} {name} 的開鎖手勢（{request.remote_addr}）',
+                        name=name, remote=request.remote_addr)
+        return jsonify(success=True, message=f'{name} 的開鎖手勢已{"更新" if gesture else "改回預設"}')
+
+    @app.route('/api/gestures')
+    def gesture_options():
+        need_login()
+        return jsonify(gestures=[{'id': g, 'label': GESTURE_LABEL[g]} for g in GESTURES],
+                       default=list(cfg.allowed_gestures))
+
     @app.route('/api/users/<name>/delete', methods=['POST'])
     def user_delete(name):
         """刪除成員：照片、名單、模型特徵全部移除並重新訓練，無法復原。每次都要 PIN。"""
@@ -363,6 +396,7 @@ def create_web(system, storage=None, line=None, notifier=None, hardening=None):
         except Exception as e:                   # 訓練失敗等：照片可能已刪，名單已移除，回報給使用者
             logging.getLogger(__name__).exception('刪除成員 %s 失敗', name)
             return jsonify(success=False, message=f'刪除時發生錯誤：{e}'), 500
+        bindings.set(name, None)                 # 之後同名的新成員不沿用舊手勢
         if storage is not None:
             storage.forget(name)
             storage.forget_attempts(name)
@@ -541,7 +575,8 @@ def create_web(system, storage=None, line=None, notifier=None, hardening=None):
                       'stop': cfg.sentinel_stop, 'max': cfg.sentinel_max, 'cooldown': cfg.sentinel_cooldown},
             system={'arduino': snap['arduino'], 'connected': snap['connected'],
                     'camera': system.info.get('camera', ''), 'gesture': system.info.get('gesture', ''),
-                    'rule': ('人臉＋手勢（' + ' / '.join(cfg.gesture_labels()) + '）') if cfg.require_gesture else '只需人臉',
+                    'rule': ('人臉＋各自綁定的手勢（未綁定：' + ' / '.join(cfg.gesture_labels()) + '）')
+                    if cfg.require_gesture else '只需人臉',
                     'unlock_seconds': cfg.unlock_seconds, 'version': __version__},
             security={'pin_required': store.required, 'source': getattr(store, 'source', 'env')},
         )

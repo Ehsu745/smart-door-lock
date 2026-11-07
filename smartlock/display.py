@@ -53,7 +53,8 @@ def door_status(system, cfg: Config):
     if st.get('visitor'):
         return (160, 40, 160), 'GUEST AT DOOR', f'{st["visitor"]} - unlock via web'
     if st.get('phase') == 'gesture':
-        return (0, 150, 230), 'SHOW GESTURE', f'{" / ".join(cfg.allowed_gestures)}  {st.get("countdown") or 0:.0f}s'
+        want = 'your gesture' if st.get('target_bound') else ' / '.join(cfg.allowed_gestures)
+        return (0, 150, 230), 'SHOW GESTURE', f'{want}  {st.get("countdown") or 0:.0f}s'
     return (50, 50, 190), 'LOCKED', ('auto unlock: on' if st.get('auto') else 'auto unlock: OFF')
 
 

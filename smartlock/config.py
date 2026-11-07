@@ -67,6 +67,7 @@ class Config:
     allowed_gestures: Tuple[str, ...] = ('Thumb_Up', 'Victory')
     gesture_score: float = 0.6
     gesture_frames: int = 5                       # 連續幾幀同一個合格手勢才算
+    gesture_wrong_frames: int = 15                # 這次驗證中，比錯手勢累計幾幀就直接失敗（防止輪流試）
     gesture_window: float = 8.0                   # 人臉通過後幾秒內要比出手勢
     face_grace: float = 3.0                       # 比手勢時臉被手擋住，超過這麼久才取消
     retry_cooldown: float = 3.0                   # 手勢逾時後隔幾秒才重新開始
@@ -106,6 +107,10 @@ class Config:
     line_cooldown: float = 300.0                  # 同一位訪客 / 開鎖失敗，幾秒內只通知一次
 
     # ---- 路徑 ----
+    @property
+    def gestures_file(self) -> Path:
+        return self.base / 'gestures.json'
+
     @property
     def pin_file(self) -> Path:
         return self.base / 'pin.json'
@@ -174,6 +179,7 @@ class Config:
             allowed_gestures=gestures,
             gesture_score=float(env.get('GESTURE_SCORE', 0.6)),
             gesture_frames=int(env.get('GESTURE_FRAMES', 5)),
+            gesture_wrong_frames=int(env.get('GESTURE_WRONG_FRAMES', 15)),
             gesture_window=float(env.get('GESTURE_WINDOW', 8)),
             web_port=int(env.get('WEB_PORT', 5050)),
             enable_qr=_flag(env, 'ENABLE_QR', '1'),

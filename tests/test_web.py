@@ -422,3 +422,66 @@ def test_delete_member_swaps_model_and_map_together(tmp_path):
     assert rec.identify(imgs['kevin'])[0].person == 'kevin'
     assert rec.identify(imgs['eric'])[0].person == 'eric'
     assert all(r.person != 'amy' for r in rec.identify(imgs['amy']))
+
+
+# ==========================================
+# 綁定開鎖手勢：每次都要 PIN、事件與狀態不寫出手勢
+# ==========================================
+def test_gesture_binding_api(tmp_path):
+    h, c = role_client(tmp_path)
+    assert c.get('/api/gestures').status_code == 401
+    c.post('/api/login', json={'pin': '4321'})
+    assert c.post('/api/users/eric/gesture', json={'gesture': 'ILoveYou'}).status_code == 403     # 登入不算數
+    assert c.post('/api/users/eric/gesture', json={'gesture': 'ILoveYou', 'pin': '0000'}).status_code == 403
+    assert c.post('/api/users/eric/gesture', json={'gesture': 'Spock', 'pin': '4321'}).status_code == 400
+    assert c.post('/api/users/nobody/gesture', json={'gesture': 'Victory', 'pin': '4321'}).status_code == 404
+    r = c.post('/api/users/eric/gesture', json={'gesture': 'ILoveYou', 'pin': '4321'})
+    assert r.status_code == 200
+    users = {u['name']: u for u in c.get('/api/users').get_json()['users']}
+    assert users['eric']['gesture'] == 'ILoveYou' and users['amy']['gesture'] is None
+    assert h.system.bindings.get('eric') == 'ILoveYou'
+    ev = [e for e in h.events if e.kind == 'gesture_changed']
+    assert len(ev) == 1 and 'ILoveYou' not in ev[0].text
+    c.post('/api/users/eric/gesture', json={'gesture': 'ILoveYou', 'pin': '4321'})              # 沒改不記事件
+    assert h.kinds().count('gesture_changed') == 1
+    c.post('/api/users/eric/gesture', json={'gesture': None, 'pin': '4321'})
+    assert h.system.bindings.get('eric') is None
+    assert len(c.get('/api/gestures').get_json()['gestures']) == 7
+
+
+def test_status_does_not_leak_bound_gesture(tmp_path):
+    from conftest import MASTER
+    h, c = role_client(tmp_path)
+    c.post('/api/login', json={'pin': '4321'})
+    c.post('/api/users/eric/gesture', json={'gesture': 'ILoveYou', 'pin': '4321'})
+    h.step(1.0, [MASTER])
+    body = c.get('/api/status').get_data(as_text=True)          # 狀態 API 不需要登入
+    assert 'ILoveYou' not in body and '"target_bound":true' in body.replace(' ', '')
+    h.step(0.5, [MASTER], 'ILoveYou')
+    assert h.unlocks == 1 and 'ILoveYou' not in c.get('/api/status').get_data(as_text=True)
+
+
+def test_delete_member_removes_gesture_binding(tmp_path):
+    h, c, _ = delete_client(tmp_path)
+    c.post('/api/login', json={'pin': '4321'})
+    c.post('/api/users/eric/gesture', json={'gesture': 'Victory', 'pin': '4321'})
+    assert c.post('/api/users/eric/delete', json={'pin': '4321', 'confirm': 'eric'}).status_code == 200
+    assert h.system.bindings.all() == {}
+
+
+def test_set_gesture_cli(tmp_path, capsys):
+    import pytest
+    from smartlock.bindings import GestureBindings
+    from smartlock.cli import set_gesture
+    cfg = Config(base=tmp_path)
+    (tmp_path / 'id_map.txt').write_text('0:eric:master\n', encoding='utf-8')
+    set_gesture(cfg, 'eric', 'Thumb_Down')
+    assert GestureBindings(cfg.gestures_file).get('eric') == 'Thumb_Down'
+    set_gesture(cfg)
+    assert '倒讚' in capsys.readouterr().out
+    with pytest.raises(ValueError):
+        set_gesture(cfg, 'eric', 'Spock')
+    with pytest.raises(ValueError):
+        set_gesture(cfg, 'nobody', 'Victory')
+    set_gesture(cfg, 'eric', 'none')
+    assert GestureBindings(cfg.gestures_file).get('eric') is None

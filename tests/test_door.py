@@ -20,10 +20,10 @@ def test_victory_also_accepted(h):
     assert h.unlocks == 1
 
 
-def test_wrong_gesture_times_out_and_can_retry(h):
-    h.step(1.0, [MASTER]).step(h.cfg.gesture_window + 0.2, [MASTER], 'Open_Palm')
+def test_wrong_gesture_fails_fast_and_can_retry(h):
+    h.step(1.0, [MASTER]).step(1.0, [MASTER], 'Open_Palm')     # 一直比錯：15 幀（約 0.75 秒）就失敗
     assert h.unlocks == 0
-    assert 'gesture_timeout' in h.kinds()
+    assert 'gesture_wrong' in h.kinds() and 'gesture_timeout' not in h.kinds()
     h.step(h.cfg.retry_cooldown + 0.2, [MASTER])          # 冷卻後重新進入手勢階段
     assert h.phase == 'gesture'
     h.step(0.5, [MASTER], 'Thumb_Up')
@@ -152,3 +152,103 @@ def test_snapshot_contains_recent_events(h):
     h.step(1.0, [MASTER]).step(0.5, [MASTER], 'Thumb_Up')
     events = h.system.snapshot()['events']
     assert events and '→ 已開鎖' in events[0]
+
+
+def test_no_hand_times_out(h):
+    h.step(1.0, [MASTER]).step(h.cfg.gesture_window + 0.2, [MASTER])
+    assert h.unlocks == 0 and 'gesture_timeout' in h.kinds()
+
+
+# ==========================================
+# 每個主人綁定自己的開鎖手勢（gestures.json）
+# ==========================================
+def bound_harness(tmp_path, **binding):
+    from smartlock.bindings import GestureBindings
+    h = Harness(Config(base=tmp_path))
+    h.system.bindings = GestureBindings(tmp_path / 'gestures.json')
+    for name, g in binding.items():
+        h.system.bindings.set(name, g)
+    return h
+
+
+def test_bound_gesture_is_the_only_one(tmp_path):
+    h = bound_harness(tmp_path, eric='Thumb_Down')
+    h.step(1.0, [MASTER]).step(1.0, [MASTER], 'Thumb_Up')       # 預設的讚不能再用
+    assert h.unlocks == 0 and 'gesture_wrong' in h.kinds()
+    h.step(h.cfg.retry_cooldown + 0.2, [MASTER]).step(0.5, [MASTER], 'Thumb_Down')
+    assert h.unlocks == 1
+
+
+def test_unbound_master_keeps_default_gestures(tmp_path):
+    h = bound_harness(tmp_path, yang='ILoveYou')                 # 只有別人有綁定
+    h.step(1.0, [MASTER]).step(0.5, [MASTER], 'Victory')
+    assert h.unlocks == 1
+
+
+def test_all_seven_gestures_can_be_bound(tmp_path):
+    from smartlock.bindings import GESTURES
+    assert len(GESTURES) == 7
+    for g in GESTURES:
+        h = bound_harness(tmp_path, eric=g)
+        h.step(1.0, [MASTER]).step(0.5, [MASTER], g)
+        assert h.unlocks == 1, g
+
+
+def test_cycling_gestures_is_caught(tmp_path):
+    """有人騙過人臉後輪流試手勢：比錯的幀數累計，不是連續才算。"""
+    h = bound_harness(tmp_path, eric='ILoveYou')
+    h.step(1.0, [MASTER])
+    for g in ['Thumb_Up', 'Victory', 'Open_Palm', 'Closed_Fist', 'Pointing_Up', 'Thumb_Down']:
+        h.step(0.15, [MASTER], g)                                 # 每個只比 3 幀，連續性門檻抓不到
+    h.step(0.5, [MASTER], 'ILoveYou')
+    assert h.unlocks == 0 and 'gesture_wrong' in h.kinds()
+
+
+def test_brief_transition_is_tolerated(tmp_path):
+    """比 YA 的過程中會短暫被認成食指朝上，不能因此失敗。"""
+    h = bound_harness(tmp_path, eric='Victory')
+    h.step(1.0, [MASTER]).step(0.2, [MASTER], 'Pointing_Up').step(0.5, [MASTER], 'Victory')
+    assert h.unlocks == 1
+
+
+def test_low_confidence_or_none_is_not_counted_as_wrong(tmp_path):
+    h = bound_harness(tmp_path, eric='Victory')
+    h.step(1.0, [MASTER]).step(2.0, [MASTER], 'Thumb_Up', score=0.3).step(2.0, [MASTER], 'None')
+    assert 'gesture_wrong' not in h.kinds() and h.phase == 'gesture'
+
+
+def test_bound_gesture_not_revealed(tmp_path):
+    """門口畫面、狀態、事件文字都不寫出綁定的是哪個手勢 —— 包括開鎖那一幀。"""
+    h = bound_harness(tmp_path, eric='ILoveYou')
+    h.step(1.0, [MASTER])
+    st = h.system.snapshot()
+    assert st['phase'] == 'gesture' and st['target_bound'] is True
+    h.step(0.5, [MASTER], 'ILoveYou')
+    assert h.unlocks == 1
+    st = h.system.snapshot()
+    assert st['gesture'] is None and st['gesture_score'] is None
+    texts = ' '.join(e.text for e in h.events) + str(st)
+    assert 'ILoveYou' not in texts and 'I Love' not in texts
+    assert '綁定手勢' in [e.text for e in h.events if e.kind == 'unlock'][0]
+
+
+def test_unbound_status_still_shows_gesture(tmp_path):
+    h = bound_harness(tmp_path)
+    h.step(1.0, [MASTER]).step(0.1, [MASTER], 'Thumb_Up')
+    assert h.system.snapshot()['gesture'] == 'Thumb_Up' and h.system.snapshot()['target_bound'] is False
+
+
+def test_bindings_reload_and_validation(tmp_path):
+    import os
+    import pytest
+    from smartlock.bindings import GestureBindings
+    running = GestureBindings(tmp_path / 'gestures.json')
+    GestureBindings(tmp_path / 'gestures.json').set('eric', 'Victory')          # 例如在 Pi 上用 set-gesture 改
+    assert running.get('eric') == 'Victory'
+    assert os.stat(tmp_path / 'gestures.json').st_mode & 0o077 == 0              # 只有自己能讀
+    running.set('eric', None)
+    assert running.get('eric') is None
+    with pytest.raises(ValueError):
+        running.set('eric', 'Middle_Finger')
+    (tmp_path / 'gestures.json').write_text('{壞掉的 json')
+    assert running.get('eric') is None                                            # 檔案壞掉不會讓門鎖掛掉

@@ -15,12 +15,29 @@ Pi Camera 3 NoIR ─▶ Raspberry Pi 5 (4GB) ──USB 序列埠──▶ Arduin
 ```
 
 - 人臉：YuNet 偵測 + SFace 128 維特徵（v2.6 起，取代 Haar + LBPH），距離 =（1 − cosine）× 100 < 50 算認得，`master` 連續 8 幀通過 → 進手勢階段
-- 手勢：MediaPipe 0.10.18 Gesture Recognizer（模型下載失敗時改用 Hands + 規則），讚 / YA 連續 5 幀 → 開鎖
+- 手勢：MediaPipe 0.10.18 Gesture Recognizer（模型下載失敗時改用 Hands + 規則）；v2.8 起每個主人可綁定一個手勢（`gestures.json`），沒綁定用讚 / YA；連續 5 幀 → 開鎖，比錯累計 15 幀 → 失敗冷卻
 - `guest` 永遠不自動開鎖，只通知；陌生人逗留 ≥ 5 秒 → 哨兵錄影
 - Arduino：送小寫 `unlock` / `lock` + `\n`，sketch 回 `Unlocked: ...` / `Locked`，8 秒後自動上鎖
 - 接線：UNO D7 → 低電位觸發繼電器 IN；鎖用獨立 12V 電源經繼電器 COM/NO（鎖的種類與 NO/NC 還沒確認），詳見 `docs/03_硬體接線.md`
 
-## 2. 目前狀態（v2.7.0）
+## 2. 目前狀態（v2.8.0）
+
+**v2.8 手勢綁定（2026-11-07，本地 Claude Code；參考雲端 session 的 LBPH 版 patch 移植到 SFace 版）**：已進 `main`，`v2.6-sface` / `v2.7-report-sface` 分支已合併
+- `bindings.py`：`GestureBindings`（`gestures.json` 0600、mtime 變了自動重讀、壞檔當沒綁定）；可選 MediaPipe 7 種；`cli.py set-gesture [名字 手勢|none]`
+- `door.py`：人臉通過時決定 `_required`（綁定的那一個，或 `ALLOWED_GESTURES`）；比錯（信心夠且不是 None）**累計** `GESTURE_WRONG_FRAMES`=15 → `gesture_wrong` + 冷卻 `retry_cooldown`；沒比手勢仍走 `gesture_timeout`
+- **不洩漏（使用者規格）**：門口畫面寫 `your gesture`、綁定時不畫目前看到的手勢名稱；`/api/status` 只有 `target_bound`，綁定時 `gesture` / `gesture_score` 一律 None（**用 `_bound` 判斷，不是 phase**：開鎖那一幀已切回 face，但 g_name 還是答案）；開鎖事件寫「綁定手勢」；`gesture_changed` 事件與 PIN 鍵盤標題都不寫手勢；骨架不變色
+- 銜接 v2.7：`learning.CLOSE` / `server.ATTEMPT_EVENTS` 加 `gesture_wrong`（時間軸可回報）；前端「異常」篩選加 `gesture_wrong`
+- 網頁：`POST /api/users/<name>/gesture`（每次 PIN、沒變不記事件）、`GET /api/gestures`（需登入）、`/api/users` 帶 `gesture`（需登入）；刪除成員一起刪綁定
+- **手機 UI（使用者在手機上確認過）**
+  - 成員頁：主人 / 訪客說明收在標題列右側 ⓘ（`toggleInfo`，蓋在清單上）；清單下方只有文字按鈕「如何新增成員」（抽屜裡分步驟＋指令）
+  - 成員詳情：**「管理」在上、「資料」在下**；開門方式顯示「人臉＋綁定手勢」或「人臉＋讚 / YA」
+  - 開鎖手勢列：預設遮住 `••••`＋眼睛斜線圖示（不是按鈕）；點這列 → **先輸入 PIN**（用 `/api/login` 驗證，錯誤照樣計入鎖定）→ 滾輪頁；離開（‹、✕、點背景、Esc）有改就**立即送出**、不再跳 PIN，不改直接離開；PIN 只留在那一頁的 closure。之後回到詳情看得到手勢（眼睛睜開），**離開詳情（closeSheet、換成別人的詳情）立即遮回去**（`revealed`）
+  - 修改權限維持舊做法：滾輪頁離開時有改才跳 PIN
+  - **滾輪完全由程式控制**（`wheelMount` / `wheelGo`）：`overflow: hidden` + `touch-action: none`，pointer 拖曳、放開後依速度決定格數（< 0.6 px/ms 不加、最多 3 格），ease-out 一次到位不彈跳；滑鼠滾輪 / 觸控板一格一格。原因：iOS 的 scroll-snap 加補對齊會上下彈跳、Safari 桌機版滑鼠滾輪不吸附。**拖動超過 4px 才 setPointerCapture**，否則項目收不到 click。列高 36px（`WHEEL_ROW` 與 CSS 要一致），沒選中的同色、淡 50%
+  - `#sheetBody` 可捲動（內容比抽屜高時不會被裁掉）
+- 測試 136 → 151；Playwright（Chromium / WebKit / Firefox）檢查過拖曳單調、對齊、26 項流程；使用者 2026-11-07 在 Mac `run --sim` 實測通過。**還沒上 Pi**
+- 參考原始碼在 `~/FCU/CE_2026/AI_smartlock_playground/ref_cloud_gesture_binding/`（已移植完，可以刪）
+
 
 **v2.7 回報誤認（2026-11-07，claude.ai 雲端 session 做的，分支 `v2.7-report-sface`，從 `v2.6-sface` 開出）**
 - 時間軸上開鎖 / 手勢逾時旁有「這不是 某某？」→ 說明 → PIN（**每次都要 PIN**，同變更權限）→ 立即生效，不用重啟
@@ -65,10 +82,11 @@ Pi Camera 3 NoIR ─▶ Raspberry Pi 5 (4GB) ──USB 序列埠──▶ Arduin
 
 ```bash
 source .venv/bin/activate
-python -m pytest -q                 # 136 個測試，不需要相機、Arduino 或人臉模型（conftest 的 FakeFaceEngine）（Mac：132 passed, 4 skipped，序列埠 pty 測試只在 Linux 跑）
+python -m pytest -q                 # 151 個測試，不需要相機、Arduino 或人臉模型（conftest 的 FakeFaceEngine）（Mac：147 passed, 4 skipped，序列埠 pty 測試只在 Linux 跑）
 python app.py run --sim             # 完整系統，用模擬 Arduino
-python app.py records | cleanup | set-pin | test-camera | test-gesture | test-arduino | test-line
-# 只看版面（不用 Pi）：python tools/preview_web.py → http://localhost:8800（手機用區網 IP），自動示範模式，PIN 1234
+python app.py records | cleanup | set-pin | set-gesture | test-camera | test-gesture | test-arduino | test-line
+# 只看版面（不用 Pi）：python tools/preview_web.py [port] → http://localhost:8800（手機用區網 IP），自動示範模式，PIN 1234
+# 給手機試的單檔：python tools/build_single_html.py <輸出.html>（不要在 repo 根目錄開 http.server，會把 .git 和 CLAUDE.md 公開到區網）
 ```
 
 **改完程式一定要跑 pytest**；改前端要實際開瀏覽器看（Playwright 截圖，至少 375×548 和 390×664 兩種尺寸）。
@@ -84,6 +102,7 @@ smartlock/
   door.py              DoorSystem 狀態機；process_frame() 可注入 clock，測試用假時鐘逐幀跑
   face.py              FaceEngine（YuNet+SFace，測試換成假的：make_engine）、辨識、capture、train（登錄特徵）、set_role、個人門檻、冒充者比對
   learning.py          回報誤認：AttemptLog、Hardening（report / undo / reset）
+  bindings.py          GestureBindings：每個主人綁定的開鎖手勢（gestures.json）
   gesture.py / arduino.py / camera.py / display.py / qr.py
   sentinel.py          哨兵：預錄緩衝、固定幀率取樣（迴圈慢時補幀）、背景寫檔 MJPG .avi
   storage.py           SQLite（records / events / presence / attempts）+ 容量管理（天數 / 總量 / SD 剩餘）
@@ -100,6 +119,7 @@ docs/                  01 居家助理未來規劃（概念階段）、02 智慧
 - **使用者既有資料不能要求重拍**：`faces/`、`id_map.txt`（格式 `編號:名字:master|guest`）、`models/` 必須相容；`face_feats.npz` 可隨時從 `faces/` 重建；舊 `face.yml` 不再使用但不要刪。`train` 會保留既有的 guest/master 設定。
 - **重新允許自動開鎖的條件**：鏡頭裡沒有臉持續 3 秒。使用者明確說過不要改這個規則。
 - **guest 永遠不自動開鎖**。
+- **綁定的開鎖手勢是第二道密碼**：門口畫面、`/api/status`、事件文字、PIN 鍵盤標題都不能寫出是哪個手勢；只有登入後的成員詳情（輸入 PIN 進過手勢頁後）看得到。
 - **測試不能碰專案資料夾**：Harness 會把 `Config.base` 換成暫存目錄（Pi 上可能有真的 `pin.json`、`records/`）。
 - 新功能優先用「訂閱事件」做，不要把邏輯塞進 `door.py`。
 - 前端：整個 App `position: fixed`，**不要用 `100dvh`**（LINE 內建瀏覽器不支援，曾造成整頁捲動）；門鎖頁尺寸由 `fitDoor()` 依實際高度計算；每秒輪詢只改有變的欄位。
@@ -108,7 +128,7 @@ docs/                  01 居家助理未來規劃（概念階段）、02 智慧
 **PIN 規則**
 - 來源優先順序：`pin.json`（雜湊）> `smartlock.env` 的 `CONTROL_PIN` > 無
 - 輸入一次後同手機免再輸入（session，改 PIN 後全部失效）；沒附 PIN 回 401 不算錯誤
-- **變更主人/訪客每次都要 PIN，已登入也不算**（使用者明確要求）；錯誤鎖定仍保留
+- **變更主人/訪客、開鎖手勢每次都要 PIN，已登入也不算**（使用者明確要求）；錯誤鎖定仍保留。手勢是「進滾輪頁前」輸入，權限是「離開滾輪頁時」輸入
 - **刪除成員**同樣每次都要 PIN，而且前端要先顯示「此操作無法復原」警告（使用者明確要求）；API 需帶 `confirm=<名字>`；不能刪最後一位成員。`face.delete_member` 先移出名單 → 刪照片 → 重新 train → `FaceRecognizer.swap()` 同時換特徵和名單（編號會重排）
 
 ## 5. LINE 通知（v2.5 已實作，以下為規格）
@@ -152,6 +172,9 @@ docs/                  01 居家助理未來規劃（概念階段）、02 智慧
 
 ## 7. 跟使用者合作的方式
 
+- **開發流程：本地開發 → 測試驗證 → 才推 GitHub**；手機 UI 有改動時，進 main 前先用 `tools/build_single_html.py` 產生單檔 HTML 給使用者在手機上試
+- **分支用完就刪**：功能測試通過直接合進 main，不保留功能分支
+
 - **一律用繁體中文回覆**；結論先講，精簡
 - **CLI 優先**；使用者懂嵌入式與 Python，不用解釋基礎
 - 給學弟看的文件要**看不懂程式的人也能照做**，學弟偏好 Word / PDF
@@ -177,6 +200,6 @@ docs/                  01 居家助理未來規劃（概念階段）、02 智慧
 
 ## 9. 隱私與機密
 
-- 不要 commit：`faces/`、`face.yml`、`face_feats.npz`、`id_map.txt`、`models/`、`impostors/`、`thresholds.json`、`records/`、`pin.json`、`smartlock.env`（都在 `.gitignore`）；`.gitignore` 另外擋掉任何位置的 `*.db*`、`*.sqlite*`、`*.avi`、`*.mp4`、`*.task`、`*.env`（`*.env.example` 除外）
+- 不要 commit：`faces/`、`face.yml`、`face_feats.npz`、`id_map.txt`、`gestures.json`、`models/`、`impostors/`、`thresholds.json`、`records/`、`pin.json`、`smartlock.env`（都在 `.gitignore`）；`.gitignore` 另外擋掉任何位置的 `*.db*`、`*.sqlite*`、`*.avi`、`*.mp4`、`*.task`、`*.env`（`*.env.example` 除外）
 - 紀錄頁、成員頁、設定頁都需要 PIN（含人臉影像）
 - 大型語言模型或任何自動化**不能自己開鎖**（居家助理規劃的原則）

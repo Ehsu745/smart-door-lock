@@ -140,8 +140,9 @@ class GestureDetector:
             self.hands.close()
 
 
-def draw_hand(frame, pts, ok):
-    color = (0, 220, 0) if ok else (0, 200, 255)
+def draw_hand(frame, pts, ok=None):
+    # 不用顏色區分「對 / 錯」：綁定的手勢是第二道密碼，變色會讓人輪流試出正確的那個
+    color = (0, 200, 255)
     for a, b in HAND_CONNECTIONS:
         cv2.line(frame, pts[a], pts[b], color, 2)
     for p in pts:

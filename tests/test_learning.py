@@ -150,6 +150,20 @@ def test_attempt_timeout_outcome(tmp_path):
     assert rig.last_attempt()['outcome'] == 'timeout'
 
 
+def test_gesture_wrong_is_an_attempt_on_the_timeline(tmp_path):
+    """人臉過了但手勢錯 = 可能是冒充者：記成一筆嘗試，時間軸上可以回報。"""
+    rig = Rig(tmp_path)
+    rig.h.system.bindings.set('eric', 'ILoveYou')       # 預設的讚就成了錯的手勢
+    rig.frames(rig.imgs['eric'], 1.0)
+    rig.frames(rig.imgs['eric'], 1.0, gesture='Thumb_Up')
+    assert rig.last_attempt()['outcome'] == 'gesture_wrong'
+    rig.post('/api/login', pin=PIN)
+    ev = rig.c.get('/api/events').get_json()['events']
+    wrong = next(e for e in ev if e['kind'] == 'gesture_wrong')
+    assert wrong['attempt']['name'] == 'eric' and not wrong['attempt']['reported']
+    assert rig.post(f"/api/attempts/{wrong['attempt']['id']}/report", pin=PIN).get_json()['success']
+
+
 def test_attempt_crops_expire_but_reported_rows_stay(tmp_path):
     rig = Rig(tmp_path)
     rig.attempt(rig.imgs['eric'])

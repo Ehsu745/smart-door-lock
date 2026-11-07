@@ -13,6 +13,7 @@
   python app.py records         哨兵錄影清單、容量與最近的事件紀錄
   python app.py cleanup         立即執行容量管理（刪除過期 / 超量的錄影）
   python app.py set-pin         設定或重設網頁 PIN（忘記 PIN 時用）
+  python app.py set-gesture 名字 手勢   綁定開鎖手勢（手勢填 none 取消；不加參數列出目前設定）
   python app.py test-line       查 LINE 額度，確認後送一則測試訊息
 
 設定會自動從專案資料夾的 smartlock.env 讀取；指令前面加的環境變數優先。
@@ -38,6 +39,7 @@ from .door import DoorSystem
 from .events import EventBus
 from .face import FaceRecognizer, capture, make_engine, train
 from .gesture import GestureDetector, draw_hand
+from .bindings import GESTURES, GestureBindings
 from .learning import AttemptLog, Hardening
 from .config import PROJECT_ROOT
 from .qr import control_url, print_qr
@@ -94,6 +96,7 @@ def run(cfg: Config):
     arduino = FakeArduino(cfg) if cfg.simulate else Arduino(cfg)
     system = DoorSystem(cfg, arduino, recognizer, gesture, EventBus())
     system.pins = PinStore(cfg.pin_file, cfg.control_pin)
+    system.bindings = GestureBindings(cfg.gestures_file)
     system.info = {'camera': camera.name, 'gesture': getattr(gesture, 'mode', '') if gesture else '未使用'}
     storage = Storage(cfg)
     system.bus.subscribe('*', storage.log_event)      # 所有事件寫入 SQLite（網頁「事件紀錄」）
@@ -326,6 +329,26 @@ def test_line(cfg: Config):
     print('已送出，請看 LINE。')
 
 
+def set_gesture(cfg: Config, name=None, gesture=None):
+    """綁定開鎖手勢。不加參數列出每個人目前的設定。"""
+    from .face import read_map
+    book = GestureBindings(cfg.gestures_file)
+    people = {n: k for n, k in read_map(cfg.map_file).values()}
+    if name is None:
+        print('可用手勢：' + '、'.join(f'{g}（{GESTURE_LABEL[g]}）' for g in GESTURES))
+        for n, k in sorted(people.items()):
+            g = book.get(n)
+            print(f'  {n:<12} {k:<7} {GESTURE_LABEL[g] if g else "未綁定（" + " / ".join(cfg.gesture_labels()) + "）"}')
+        return
+    if name not in people:
+        raise ValueError(f'找不到 {name}，先用 capture + train 新增')
+    gesture = None if str(gesture).lower() == 'none' else gesture
+    if gesture is not None and gesture not in GESTURES:
+        raise ValueError(f'手勢只能是：{", ".join(GESTURES)} 或 none')
+    book.set(name, gesture)
+    print(f'{name} 的開鎖手勢：{GESTURE_LABEL.get(book.get(name), "未綁定（預設）")}。正在執行的門鎖會自動套用。')
+
+
 def menu(cfg: Config):
     while True:
         print('\n1. 採集人臉\n2. 訓練模型\n3. 啟動門鎖系統\n4. 測試 Arduino\n5. 離開'
@@ -373,6 +396,8 @@ def main(argv=None) -> int:
             menu(cfg)
         elif argv[0] == 'capture' and len(argv) == 2:
             capture(cfg, argv[1])
+        elif argv[0] == 'set-gesture' and len(argv) in (1, 3):
+            set_gesture(cfg, *argv[1:])
         elif argv == ['run', '--sim']:
             run(dataclasses.replace(cfg, simulate=True))
         elif argv[0] in commands and len(argv) == 1:

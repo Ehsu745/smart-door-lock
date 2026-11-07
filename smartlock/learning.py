@@ -28,7 +28,7 @@ from .storage import Storage
 log = logging.getLogger(__name__)
 
 CLOSE = {'unlock': 'unlocked', 'gesture_timeout': 'timeout', 'gesture_cancel': 'cancelled',
-         'door_failed': 'door_failed'}
+         'door_failed': 'door_failed', 'gesture_wrong': 'gesture_wrong'}
 
 
 class AttemptLog:

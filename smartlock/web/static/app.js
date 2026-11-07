@@ -37,6 +37,7 @@ const Real = {
   settings: (refresh) => http('/api/settings' + (refresh ? '?refresh=1' : '')),
   deleteRecord: (id) => http(`/api/records/${id}`, { method: 'DELETE' }),
   setRole: (name, role, pin) => post(`/api/users/${encodeURIComponent(name)}/role`, { role, pin }),
+  setGesture: (name, gesture, pin) => post(`/api/users/${encodeURIComponent(name)}/gesture`, { gesture, pin }),
   deleteUser: (name, pin) => post(`/api/users/${encodeURIComponent(name)}/delete`, { pin, confirm: name }),
   photo: (name) => `/api/users/${encodeURIComponent(name)}/photo`,
   snapshot: (id) => `/records/${id}/snapshot.jpg`,
@@ -56,7 +57,9 @@ const Demo = (() => {
   const ev = (dt, kind, text, extra = {}) => ({ id: nextId--, time: t0 - dt, kind, text, data: {}, ...extra });
   const events = [
     ev(120, 'lock', '自動上鎖'),
-    ev(128, 'unlock', '人臉 eric + 手勢 YA(Victory) → 已開鎖', { attempt: { id: 'demo1', name: 'eric', crop: false, reported: false, distance: 31.2 } }),
+    ev(128, 'unlock', '人臉 eric + 綁定手勢 → 已開鎖', { attempt: { id: 'demo1', name: 'eric', crop: false, reported: false, distance: 31.2 } }),
+    ev(2400, 'gesture_wrong', 'eric 手勢不正確，3 秒後可重試', { attempt: { id: 'demo3', name: 'eric', crop: false, reported: false, distance: 44.1 } }),
+    ev(day + 3000, 'gesture_changed', '網頁設定 eric 的開鎖手勢（192.168.1.23）'),
     ev(1800, 'sentinel_saved', '哨兵：錄影 #12 已儲存（23 秒）', { clip: { id: 12, duration: 23, snapshot: false, status: 'done' } }),
     ev(3600, 'guest_detected', '偵測到訪客：amy，建議開鎖'),
     ev(3550, 'unlock', '手動解鎖（手機） → 已開鎖'),
@@ -67,9 +70,9 @@ const Demo = (() => {
     ev(9 * day, 'sentinel_saved', '哨兵：錄影 #3 已儲存（14 秒）', { clip: { id: 3, deleted: true } }),
     ev(2 * day + 4000, 'door_failed', '手動解鎖（手機） → UNLOCK 失敗：Arduino 沒有回應'),
   ];
-  const demoUsers = [{ name: 'eric', role: 'master', photos: 30, last_seen: t0 - 128 }, { name: 'yang', role: 'master', photos: 30, last_seen: t0 - day - 560 },
+  const demoUsers = [{ name: 'eric', role: 'master', photos: 30, last_seen: t0 - 128, gesture: 'Victory' }, { name: 'yang', role: 'master', photos: 30, last_seen: t0 - day - 560 },
     { name: 'amy', role: 'guest', photos: 30, last_seen: t0 - 3600 }, { name: 'kevin', role: 'guest', photos: 24, last_seen: null }]
-    .map((u) => ({ threshold: 50, reports: 0, ...u }));
+    .map((u) => ({ threshold: 50, reports: 0, gesture: null, ...u }));
   const findAttempt = (id) => events.find((e) => e.attempt && e.attempt.id === id);
   const push = (kind, text) => events.unshift({ id: 1000 + events.length, time: now(), kind, text, data: {} });
   const authed = () => st.loggedIn;
@@ -85,6 +88,7 @@ const Demo = (() => {
         name: gesture ? 'eric' : guest ? 'amy' : stranger ? 'Unknown' : '無人臉',
         category: gesture ? 'master' : guest ? 'guest' : stranger ? 'Stranger' : '',
         visitor: guest && !left ? 'amy' : null, phase: gesture && !left ? 'gesture' : 'face', target: 'eric',
+        target_bound: !!demoUsers[0].gesture,
         countdown: Math.max(0, st.gestureUntil - now()), allowed: ['讚(Thumb_Up)', 'YA(Victory)'],
         unlocked: left > 0, unlock_left: left, unlock_seconds: 8, auto: st.auto, require_gesture: true,
         connected: true, arduino: '模擬模式（未接 Arduino）', pin_required: !!st.pin,
@@ -125,7 +129,7 @@ const Demo = (() => {
         storage: { count: 23, used_mb: 312, limit_mb: 2048, keep_days: 7, disk_free_mb: 18640, disk_total_mb: 29000 },
         sentinel: { enabled: true, trigger: 5, stop: 5, max: 60, cooldown: 300 },
         system: { arduino: '模擬模式（未接 Arduino）', connected: true, camera: 'Pi 相機（rpicam）', gesture: 'MediaPipe Gesture Recognizer',
-          rule: '人臉＋手勢（讚(Thumb_Up) / YA(Victory)）', unlock_seconds: 8, version: '2.2.0（示範）' },
+          rule: '人臉＋各自綁定的手勢（未綁定：讚(Thumb_Up) / YA(Victory)）', unlock_seconds: 8, version: '2.8.0（示範）' },
         security: { pin_required: !!st.pin, source: 'file' },
       };
     },
@@ -136,6 +140,14 @@ const Demo = (() => {
       u.role = role;
       push('role_changed', `網頁將 ${name} 改成${role === 'master' ? '主人' : '訪客'}（示範）`);
       return { ok: true, message: `${name} 已改成${role === 'master' ? '主人' : '訪客'}` };
+    },
+    async setGesture(name, gesture, pin) {
+      need();
+      if (pin !== st.pin) return { ok: false, status: 403, message: 'PIN 錯誤' };
+      const u = demoUsers.find((x) => x.name === name);
+      if (u.gesture !== gesture) push('gesture_changed', `網頁${gesture ? '設定' : '取消'} ${name} 的開鎖手勢（示範）`);
+      u.gesture = gesture;
+      return { ok: true, message: `${name} 的開鎖手勢已${gesture ? '更新' : '改回預設'}` };
     },
     async deleteUser(name, pin) {
       need();
@@ -316,7 +328,8 @@ function renderStrip(d, rec) {
   if (d.phase === 'gesture' && !d.unlocked) {
     kind = 'gesture'; title = `${d.target || ''} 人臉通過`;
     // 狀態列和影像同寬，窄螢幕放不下英文名稱：「讚(Thumb_Up)」只顯示「讚」
-    sub = `請比出手勢：${(d.allowed || []).map((g) => g.split('(')[0]).join(' / ')}`; count = String(Math.ceil(d.countdown || 0));
+    // 綁定手勢是第二道密碼：只提示「比出綁定手勢」，不說是哪一個
+    sub = d.target_bound ? '請比出綁定手勢' : `請比出手勢：${defaultGestures(d)}`; count = String(Math.ceil(d.countdown || 0));
   } else if (d.visitor && !d.unlocked) {
     kind = 'guest'; title = `訪客 ${d.visitor} 在門口`; sub = '訪客不會自動開門，要讓他進來就按住鎖';
   } else if (rec) {
@@ -460,7 +473,7 @@ let people = [];
 function renderPeople() {
   return guarded($('peopleList'), async () => {
     people = await Api.users();
-    const group = (role, title, note) => {
+    const group = (role, title) => {
       const ps = people.filter((p) => p.role === role);
       if (!ps.length) return '';
       return `<div class="group-title"><span>${title}</span><span>${ps.length} 人</span></div>
@@ -469,37 +482,80 @@ function renderPeople() {
             ${avatar(p)}
             <span class="meta"><span class="name">${esc(p.name)}</span><br><span class="sub">${ago(p.last_seen)}</span></span>
             <span class="role ${role}">${role === 'master' ? '主人' : '訪客'}</span>
-          </button>`).join('')}</div>
-        <div class="hint-box" style="margin-top:6px">${note}</div>`;
+          </button>`).join('')}</div>`;
     };
-    $('peopleList').innerHTML = (people.length ? group('master', '主人', '人臉＋手勢通過就會自動開門') +
-      group('guest', '訪客', '只會通知你有人在門口，不會自動開門') : '<div class="empty">還沒有成員</div>') +
-      `<div class="hint-box">新增成員要在 Pi 上執行 <code>python app.py capture 名字</code>，再 <code>python app.py train</code>，然後重新啟動門鎖。</div>`;
+    // 主人 / 訪客的說明收在標題列右邊的 ⓘ 裡
+    $('peopleList').innerHTML = (people.length ? group('master', '主人') + group('guest', '訪客')
+      : '<div class="empty">還沒有成員</div>') +
+      '<button class="text-btn" onclick="addHelp()">如何新增成員</button>';
   });
+}
+// 新增成員的步驟收在按鈕裡，成員頁只留清單
+function addHelp() {
+  openSheet(`<h3>如何新增成員</h3>
+    <ol class="steps">
+      <li>在 Pi 上停止門鎖（相機同時只能給一個程式用）
+        <code>sudo systemctl stop smartlock</code><small>用 python app.py run 啟動的話，按 Ctrl+C</small></li>
+      <li>進到專案資料夾
+        <code>cd ~/door_pi_gesture &amp;&amp; source .venv/bin/activate</code></li>
+      <li>拍照：站在門口的光線下，看著鏡頭慢慢轉頭，會自動拍 30 張
+        <code>python app.py capture 名字</code><small>名字只能用英文、數字、減號</small></li>
+      <li>登錄
+        <code>python app.py train</code></li>
+      <li>重新啟動門鎖
+        <code>sudo systemctl start smartlock</code></li>
+    </ol>
+    <div class="infobox">新成員預設是<b>主人</b>。回到成員頁點他，可以改成訪客或設定開鎖手勢。<br>
+      有戴眼鏡的人，建議戴與不戴各拍一次（用同一個名字再 capture 一次，然後 train）。</div>
+    <button class="btn ghost" style="width:100%" onclick="closeSheet()">知道了</button>`);
 }
 const ROLE_NAME = { master: '主人', guest: '訪客' };
 const ROLE_DESC = { master: '人臉＋手勢自動開門', guest: '只通知，不自動開門' };
-// 成員詳情：上面是資料，下面只有一個「修改權限」入口（變更身分、刪除都收在裡面，避免誤觸）
+// MediaPipe 內建的 7 種手勢；'' = 沒綁定，用預設（ALLOWED_GESTURES，通常是讚 / YA）
+const GESTURES = [
+  { id: 'Thumb_Up', icon: '👍', label: '讚' }, { id: 'Victory', icon: '✌️', label: 'YA' },
+  { id: 'Thumb_Down', icon: '👎', label: '倒讚' }, { id: 'Open_Palm', icon: '✋', label: '張開手掌' },
+  { id: 'Closed_Fist', icon: '✊', label: '握拳' }, { id: 'Pointing_Up', icon: '☝️', label: '食指朝上' },
+  { id: 'ILoveYou', icon: '🤟', label: 'I Love You' },
+];
+const gestureName = (id) => { const g = GESTURES.find((x) => x.id === id); return g ? `${g.icon} ${g.label}` : ''; };
+const defaultGestures = (d = last.status) => ((d && d.allowed) || ['讚', 'YA']).map((g) => g.split('(')[0]).join(' / ');
+const openWay = (p) => p.role !== 'master' ? ROLE_DESC.guest : `人臉＋${p.gesture ? '綁定手勢' : defaultGestures()}`;
+// 成員詳情：上面是資料，下面是「修改權限」「開鎖手勢」入口（變更都收在子頁裡，避免誤觸）
 function personSheet(i) {
   const p = people[i];
+  if (revealed !== p.name) revealed = null;          // 換成別人的詳情：立即改回不可見
+  const shown = revealed === p.name;
   openSheet(`
     <div class="detail-head">${avatar(p)}
       <div><h3 style="margin:0">${esc(p.name)}</h3><span class="role ${p.role}">${ROLE_NAME[p.role]}</span></div></div>
-    <div class="sheet-label">資料</div>
-    <div class="sheet-card">
-      <div class="row"><span>開門方式</span><span class="v">${ROLE_DESC[p.role]}</span></div>
-      <div class="row"><span>訓練照片</span><span class="v">${p.photos} 張</span></div>
-      <div class="row"><span>最近出現</span><span class="v">${ago(p.last_seen)}</span></div>
-      ${p.role === 'master' ? `<div class="row"><span>判定標準</span><span class="v">${strictLabel(p)}</span></div>` : ''}
-    </div>
     <div class="sheet-label">管理</div>
     <div class="sheet-card">
       <button class="row link go" onclick="roleSheet(${i})">
         <span>修改權限<small>變更主人 / 訪客、刪除成員資料</small></span><span class="v">›</span></button>
+      ${p.role === 'master' ? `<button class="row link go" onclick="gestureEnter(${i})">
+        <span>開鎖手勢<small>只有綁定的手勢能開門</small></span>
+        <span class="v">${p.gesture ? `<span class="cur" id="gCur">${shown ? gestureName(p.gesture) : SECRET}</span><span class="eye"
+          id="gEye" aria-label="${shown ? '已顯示' : '已隱藏，輸入 PIN 後顯示'}">${shown ? EYE : EYE_OFF}</span>`
+          : '<span class="cur">預設</span>'}›</span></button>` : ''}
       ${tightened(p) ? `<button class="row link go" onclick="resetThreshold(${i})">
         <span>恢復預設判定標準<small>在門口重新拍照、train 之後再用；回報過的冒充者照片會保留</small></span><span class="v">›</span></button>` : ''}
+    </div>
+    <div class="sheet-label">資料</div>
+    <div class="sheet-card">
+      <div class="row"><span>開門方式</span><span class="v">${openWay(p)}</span></div>
+      <div class="row"><span>訓練照片</span><span class="v">${p.photos} 張</span></div>
+      <div class="row"><span>最近出現</span><span class="v">${ago(p.last_seen)}</span></div>
+      ${p.role === 'master' ? `<div class="row"><span>判定標準</span><span class="v">${strictLabel(p)}</span></div>` : ''}
     </div>`);
 }
+// 綁定的手勢預設遮住（像密碼欄）。點這一列 → 輸入 PIN → 進滾輪頁；之後回到詳情就看得到，
+// 離開詳情（關掉抽屜、換成別人的詳情）立即改回不可見。
+let revealed = null;           // 目前看得到哪一位的手勢（名字）
+const SECRET = '••••';
+const EYE = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.6 5.1A10.8 10.8 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-2.9 3.9M6.6 6.6C3.7 8.4 2 12 2 12s3.6 7 10 7a9.7 9.7 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M3 3l18 18"/></svg>';
+
 const tightened = (p) => p.threshold != null && p.threshold < (p.default_threshold ?? 50);
 function strictLabel(p) {
   if (!tightened(p)) return '預設';
@@ -515,23 +571,88 @@ function resetThreshold(i) {
   });
 }
 
-// 修改權限：iOS 風格滾輪選主人 / 訪客，沒有套用鍵 —— 離開這頁（‹ 返回、✕、點背景、Esc）時才生效：
+// 子頁（修改權限、開鎖手勢）：iOS 風格滾輪，沒有套用鍵 —— 離開這頁（‹ 返回、✕、點背景、Esc）時才生效：
 // 有改就跳出 PIN（每次變更都要 PIN），在 PIN 鍵盤按 ✕ 等於放棄。滾動時不送請求、不跳 PIN。
+const WHEEL_ROW = 36;            // 一列的高度，和 app.css 的 .wheel-item 一致
+let wheel = null;              // { keys, sel, onSettle }：目前子頁的滾輪
+let subLeave = null;           // 子頁開著時：離開前先呼叫，回傳 true 表示已接手（要輸入 PIN）
+function wheelHtml(label, items) {
+  return `<div class="wheel" role="listbox" aria-label="${label}">
+      <div class="wheel-band"></div>
+      <div class="wheel-list" id="wheelList">
+        <div class="wheel-pad"></div>
+        ${items.map((html, k) => `<div class="wheel-item" role="option" data-k="${k}" onclick="wheelGo(${k})">${html}</div>`).join('')}
+        <div class="wheel-pad"></div>
+      </div>
+    </div>`;
+}
+// 滾輪完全由程式控制（不用瀏覽器的捲動、scroll-snap、邊界回彈）：
+//   拖曳時跟著手指；放開後依速度算出要停在哪一格，用只減速、不超過的動畫一次到位，不會上下彈跳。
+function wheelMount(keys, current, onSettle) {
+  const list = $('wheelList');
+  wheel = { keys, sel: current, onSettle, list, target: null, anim: 0, dragged: false };
+  list.scrollTop = Math.max(0, keys.indexOf(current)) * WHEEL_ROW;
+  const max = () => (wheel.keys.length - 1) * WHEEL_ROW;
+  let drag = null, acc = 0;
+  list.addEventListener('pointerdown', (e) => {
+    if (e.button > 0) return;
+    cancelAnimationFrame(wheel.anim); wheel.target = null; wheel.dragged = false;
+    drag = { id: e.pointerId, y: e.clientY, top: list.scrollTop, lastY: e.clientY, lastT: e.timeStamp, v: 0, moved: false };
+  });
+  list.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const dy = e.clientY - drag.y;
+    if (!drag.moved) {
+      if (Math.abs(dy) <= 4) return;                                     // 還只是點一下：不攔截，讓項目收到 click
+      drag.moved = true;
+      try { list.setPointerCapture(drag.id); } catch (_) {}              // 真的在拖：手指移出滾輪也繼續跟著
+    }
+    list.scrollTop = Math.max(0, Math.min(max(), drag.top - dy));       // 頭尾直接停住，不做橡皮筋
+    const dt = e.timeStamp - drag.lastT;
+    if (dt > 0) drag.v = 0.8 * ((drag.lastY - e.clientY) / dt) + 0.2 * drag.v;   // px/ms，平滑一下
+    drag.lastY = e.clientY; drag.lastT = e.timeStamp;
+    wheelPaint();
+  });
+  const release = () => {
+    if (!drag) return;
+    const d = drag; drag = null;
+    if (!d.moved) return;                                                // 只是點一下：交給項目的 onclick
+    wheel.dragged = true;
+    // 慢慢拖：停在離手指最近的那一格；用力甩（> 0.6 px/ms）才多走，最多 3 格
+    const fling = Math.abs(d.v) < 0.6 ? 0 : Math.max(-3, Math.min(3, d.v * 120 / WHEEL_ROW));
+    wheelGo(Math.round(list.scrollTop / WHEEL_ROW + fling));
+  };
+  list.addEventListener('pointerup', release);
+  list.addEventListener('pointercancel', release);
+  list.addEventListener('click', (e) => {                               // 拖曳結束時不要觸發項目的點擊
+    if (wheel.dragged) { wheel.dragged = false; e.stopPropagation(); e.preventDefault(); }
+  }, true);
+  // 電腦的滑鼠滾輪 / 觸控板：一格滾一格
+  list.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    acc += e.deltaMode === 1 ? e.deltaY * WHEEL_ROW : e.deltaY;
+    if (Math.abs(acc) < 30) return;
+    acc = 0;
+    wheelGo((wheel.target ?? Math.round(list.scrollTop / WHEEL_ROW)) + Math.sign(e.deltaY));
+  }, { passive: false });
+  wheelPaint(true);
+}
+function subBack(i) {
+  const leave = subLeave;
+  subLeave = null;
+  if (!(leave && leave('back'))) personSheet(i);
+}
 const WHEEL_ROLES = ['master', 'guest'];
-const WHEEL_ROW = 40;
-let wheelSel = null;
-let roleLeave = null;          // 修改權限頁開著時：離開前先呼叫，回傳 true 表示已接手（要輸入 PIN）
 function roleSheet(i) {
   const p = people[i];
-  wheelSel = p.role;
   openSheet(`
-    <div class="sub-head"><button class="back" onclick="roleBack(${i})" aria-label="返回">‹</button><h3>修改權限</h3></div>
+    <div class="sub-head"><button class="back" onclick="subBack(${i})" aria-label="返回">‹</button><h3>修改權限</h3></div>
     <div class="sheet-tools">${avatar(p, 'sm')}
       <button class="info-btn" id="infoBtn" aria-label="主人和訪客的差別" aria-expanded="false" onclick="toggleRoleInfo()">i</button></div>
     <div class="role-info" id="roleInfo" hidden>
       <h3>主人和訪客有什麼不同？</h3>
       <div class="role-card"><div class="rc-head"><span class="role master">主人</span><small>master</small></div>
-        <ul><li>人臉＋手勢（讚 / YA）通過就<b>自動開門</b></li>
+        <ul><li>人臉＋手勢（自己綁定的，沒綁定用讚 / YA）通過就<b>自動開門</b></li>
           <li>到門口不會發 LINE 通知</li>
           <li>至少要留一位主人，否則沒有人能自動開門</li></ul></div>
       <div class="role-card"><div class="rc-head"><span class="role guest">訪客</span><small>guest</small></div>
@@ -541,67 +662,118 @@ function roleSheet(i) {
       <p class="ri-foot">不在名單上的人是陌生人：在門口逗留 5 秒會自動錄影並通知。<br>改了身分，離開這頁時輸入 PIN 就會生效。</p>
       <button class="btn ghost" style="width:100%" onclick="toggleRoleInfo(false)">知道了</button>
     </div>
-    <div class="wheel" role="listbox" aria-label="選擇身分">
-      <div class="wheel-band"></div>
-      <div class="wheel-list" id="wheelList">
-        <div class="wheel-pad"></div>
-        ${WHEEL_ROLES.map((r, k) => `<div class="wheel-item" role="option" data-k="${k}" onclick="wheelGo(${k})">
-          ${ROLE_NAME[r]}<small>${r}</small></div>`).join('')}
-        <div class="wheel-pad"></div>
-      </div>
-    </div>
+    ${wheelHtml('選擇身分', WHEEL_ROLES.map((r) => `${ROLE_NAME[r]}<small>${r}</small>`))}
     <div class="wheel-desc" id="wheelDesc"></div>
     <div class="danger-zone">
       <button class="btn danger-text" onclick="confirmDelete(${i})">刪除成員資料</button>
     </div>`);
-  roleLeave = (how) => {
-    if (wheelSel === p.role) return false;
-    changeRole(i, wheelSel, how);
+  subLeave = (how) => {
+    if (wheel.sel === p.role) return false;
+    changeRole(i, wheel.sel, how);
     return true;
   };
-  const list = $('wheelList');
-  list.scrollTop = WHEEL_ROLES.indexOf(p.role) * WHEEL_ROW;
-  let raf = 0, idle = 0;
-  list.addEventListener('scroll', () => {
-    cancelAnimationFrame(raf); raf = requestAnimationFrame(() => wheelPaint(i));
-    clearTimeout(idle); idle = setTimeout(() => wheelPaint(i, true), 90);
-  }, { passive: true });
-  wheelPaint(i, true);
+  wheelMount(WHEEL_ROLES, p.role, (role) => {
+    const lastMaster = p.role === 'master' && role === 'guest' && people.filter((x) => x.role === 'master').length === 1;
+    // 身分說明放在 ⓘ 裡；這裡只在有改動時提醒怎麼生效
+    $('wheelDesc').innerHTML = role === p.role ? '' : '<span class="pending">離開這頁時輸入 PIN 即生效</span>' +
+      (lastMaster ? '<br><span class="warn">他是最後一位主人，改完沒有人能自動開門</span>' : '');
+  });
 }
-function roleBack(i) {
-  const leave = roleLeave;
-  roleLeave = null;
-  if (!(leave && leave('back'))) personSheet(i);
+// 開鎖手勢：和修改權限同一套子頁；滾輪第一格是「預設」（取消綁定）
+const WHEEL_GESTURES = ['', ...GESTURES.map((g) => g.id)];
+function gestureEnter(i) {
+  const p = people[i];
+  let pin = '';
+  askPin({
+    title: `輸入 PIN 變更 ${p.name} 的開鎖手勢`,
+    note: '通過後才能選擇手勢',
+    // 先驗證一次（錯誤次數照樣計入鎖定）；通過後把 PIN 留在這一頁，離開時送出變更用，之後就丟掉
+    submit: (v) => { pin = v; return Api.login(v).catch((e) => ({ ok: false, message: e.message })); },
+    done: () => {
+      revealed = p.name;                                 // 輸入過 PIN：回到詳情時看得到手勢
+      const k = people.findIndex((x) => x.name === p.name); if (k >= 0) gestureSheet(k, pin);
+    },
+    cancel: () => personSheet(i),
+  });
 }
-function toggleRoleInfo(show) {
-  const box = $('roleInfo'), btn = $('infoBtn');
+function gestureSheet(i, pin) {
+  const p = people[i];
+  const cur = p.gesture || '';
+  openSheet(`
+    <div class="sub-head"><button class="back" onclick="subBack(${i})" aria-label="返回">‹</button><h3>開鎖手勢</h3></div>
+    <div class="sheet-tools">${avatar(p, 'sm')}
+      <button class="info-btn" id="infoBtn" aria-label="開鎖手勢說明" aria-expanded="false" onclick="toggleRoleInfo()">i</button></div>
+    <div class="role-info" id="roleInfo" hidden>
+      <h3>開鎖手勢是第二道密碼</h3>
+      <div class="role-card"><ul>
+        <li>綁定後，${esc(p.name)} <b>只能用這一個手勢</b>開門；選「預設」就是讚或 YA 都可以</li>
+        <li>門口螢幕、手機門鎖頁、事件紀錄都<b>不會顯示</b>該比哪一個，只有這裡看得到</li>
+        <li>比錯的手勢累計約 1 秒就算失敗，要等幾秒才能重試（防止輪流試）</li>
+        <li>人臉過了但手勢比錯，會記在紀錄的「異常」，可以回報「這不是 ${esc(p.name)}」</li></ul></div>
+      <p class="ri-foot">改了手勢，離開這頁就會生效，不用重新啟動門鎖。</p>
+      <button class="btn ghost" style="width:100%" onclick="toggleRoleInfo(false)">知道了</button>
+    </div>
+    ${wheelHtml('選擇開鎖手勢', WHEEL_GESTURES.map((g) => g
+      ? `${gestureName(g)}<small>${g}</small>` : `預設<small>${defaultGestures()}</small>`))}
+    <div class="wheel-desc" id="wheelDesc"></div>`);
+  // 離開（‹、✕、點背景、Esc）時有改就立即送出，不再跳 PIN（進來前已經輸入過）
+  subLeave = (how) => {
+    if (wheel.sel === cur) return false;
+    const gesture = wheel.sel || null;
+    Api.setGesture(p.name, gesture, pin).catch((e) => ({ ok: false, message: e.message })).then(async (r) => {
+      toast(r.ok ? r.message : `沒有變更：${r.message || '連不到門鎖'}`);
+      await renderPeople();
+      if (how === 'back') { const k = people.findIndex((x) => x.name === p.name); if (k >= 0) personSheet(k); }
+    });
+    return how === 'back';                  // 按 ‹：等送出後回到成員詳情；關閉：直接收起抽屜
+  };
+  wheelMount(WHEEL_GESTURES, cur, (g) => {
+    $('wheelDesc').innerHTML = g === cur ? '' : '<span class="pending">離開這頁就會生效</span>';
+  });
+}
+function toggleRoleInfo(show) { toggleInfo('roleInfo', 'infoBtn', show); }
+function toggleInfo(boxId, btnId, show) {
+  const box = $(boxId), btn = $(btnId);
   if (!box) return;
   const open = show === undefined ? box.hidden : show;
   box.hidden = !open;
   btn.setAttribute('aria-expanded', String(open));
   btn.classList.toggle('on', open);
 }
-function wheelGo(k) { const list = $('wheelList'); if (list) list.scrollTo({ top: k * WHEEL_ROW, behavior: 'smooth' }); }
-function wheelPaint(i, settled = false) {
+// 移到第 k 格：ease-out（只減速、不超過目標），距離越遠時間稍長
+function wheelGo(k) {
+  const list = $('wheelList');
+  if (!list || !wheel || wheel.list !== list) return;
+  k = Math.max(0, Math.min(wheel.keys.length - 1, k));
+  wheel.target = k;
+  cancelAnimationFrame(wheel.anim);
+  const from = list.scrollTop, to = k * WHEEL_ROW, dist = to - from;
+  const dur = Math.min(320, 140 + Math.abs(dist) * 1.2), t0 = performance.now();
+  const step = (now) => {
+    const t = Math.min(1, (now - t0) / dur);
+    list.scrollTop = from + dist * (1 - Math.pow(1 - t, 3));
+    if (t < 1) { wheelPaint(); wheel.anim = requestAnimationFrame(step); return; }
+    list.scrollTop = to;
+    wheel.target = null;
+    wheelPaint(true);
+  };
+  wheel.anim = requestAnimationFrame(step);
+}
+function wheelPaint(settled = false) {
   const list = $('wheelList');
   if (!list) return;
   const pos = list.scrollTop / WHEEL_ROW;
   list.querySelectorAll('.wheel-item').forEach((el) => {
     const d = Math.max(-2.2, Math.min(2.2, +el.dataset.k - pos));      // 離中心幾格
-    el.style.transform = `rotateX(${-d * 24}deg) translateZ(0)`;
-    el.style.opacity = String(Math.max(0.25, 1 - Math.abs(d) * 0.45));
+    // 像 iPhone：選中的正常，其他的同色但稍淡；滾動中依距離漸變
+    el.style.opacity = String(1 - Math.min(1, Math.abs(d)) * 0.5);
     el.classList.toggle('on', Math.abs(d) < 0.5);
   });
-  const k = Math.max(0, Math.min(WHEEL_ROLES.length - 1, Math.round(pos)));
-  const role = WHEEL_ROLES[k];
-  if (role !== wheelSel && navigator.vibrate) navigator.vibrate(8);
-  wheelSel = role;
-  if (!settled) return;
-  const p = people[i], same = role === p.role;
-  const lastMaster = p.role === 'master' && role === 'guest' && people.filter((x) => x.role === 'master').length === 1;
-  // 身分說明放在 ⓘ 裡；這裡只在有改動時提醒怎麼生效
-  $('wheelDesc').innerHTML = same ? '' : '<span class="pending">離開這頁時輸入 PIN 即生效</span>' +
-    (lastMaster ? '<br><span class="warn">他是最後一位主人，改完沒有人能自動開門</span>' : '');
+  const k = Math.max(0, Math.min(wheel.keys.length - 1, Math.round(pos)));
+  const sel = wheel.keys[k];
+  if (sel !== wheel.sel && navigator.vibrate) navigator.vibrate(8);
+  wheel.sel = sel;
+  if (settled) wheel.onSettle(sel);
 }
 // 刪除前先顯示警告（不用 confirm()：LINE 內建瀏覽器可能擋掉），確認後再輸入 PIN
 function confirmDelete(i) {
@@ -646,11 +818,11 @@ function changeRole(i, role, how = 'close') {
    3. 紀錄：依日期分組的時間軸
    ========================================================= */
 const FILTERS = [['全部', null], ['開鎖', ['unlock', 'lock', 'door_failed']], ['訪客', ['guest_detected']],
-  ['錄影', ['sentinel_saved']], ['異常', ['door_failed', 'pin_rejected', 'gesture_timeout', 'impostor_reported']]];
+  ['錄影', ['sentinel_saved']], ['異常', ['door_failed', 'pin_rejected', 'gesture_timeout', 'gesture_wrong', 'impostor_reported']]];
 const HIDE_IN_ALL = ['face_passed', 'stranger_detected', 'gesture_cancel', 'info'];   // 重複或太細的事件
 const KIND_CLASS = { unlock: 'unlock', lock: 'lock', guest_detected: 'guest', sentinel_saved: 'sentinel',
   door_failed: 'alert', pin_rejected: 'alert', gesture_timeout: 'alert', pin_changed: 'lock', role_changed: 'lock', member_deleted: 'alert',
-  impostor_reported: 'alert', impostor_undone: 'lock', threshold_reset: 'lock' };
+  impostor_reported: 'alert', impostor_undone: 'lock', threshold_reset: 'lock', gesture_wrong: 'alert', gesture_changed: 'lock' };
 let filter = 0, events = [], lastEventId = null, tlMore = false;
 
 function dayLabel(t) {
@@ -900,18 +1072,19 @@ async function logout() {
    底部抽屜、PIN 鍵盤、提示
    ========================================================= */
 function openSheet(html) {
-  roleLeave = null;                                     // 換到別的抽屜內容（刪除警告、PIN 鍵盤…）就不再攔截關閉
+  subLeave = null;                                      // 換到別的抽屜內容（刪除警告、PIN 鍵盤…）就不再攔截關閉
   $('sheetBody').innerHTML = html;
   $('sheet').classList.add('show'); $('scrim').classList.add('show');
 }
 function closeSheet() {
-  if (roleLeave) {                                      // 修改權限頁：有改就先輸入 PIN，不直接關
-    const leave = roleLeave;
-    roleLeave = null;
+  if (subLeave) {                                       // 子頁（修改權限、開鎖手勢）：有改就先輸入 PIN，不直接關
+    const leave = subLeave;
+    subLeave = null;
     if (leave('close')) return;
   }
   const cancel = pinFlow && pinFlow.cancel;             // PIN 鍵盤被關掉 = 放棄
   pinFlow = null;
+  revealed = null;                                      // 抽屜收起來 = 離開詳情：手勢改回不可見
   $('sheet').classList.remove('show'); $('scrim').classList.remove('show');
   setTimeout(() => { if (!$('sheet').classList.contains('show')) $('sheetBody').innerHTML = ''; }, 320);  // 清掉才會停止回放串流
   if (cancel) setTimeout(cancel, 340);
