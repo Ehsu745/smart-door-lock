@@ -51,6 +51,16 @@ CREATE TABLE IF NOT EXISTS presence (
     name  TEXT PRIMARY KEY,              -- 成員最近一次被認出的時間
     last  REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS attempts (
+    id        TEXT PRIMARY KEY,          -- 每次人臉通過一筆（door.py 的 attempt 編號）
+    time      REAL NOT NULL,
+    name      TEXT NOT NULL,             -- 被認成誰
+    distance  REAL,                      -- 連續通過那幾幀中最小的 SFace 距離
+    crop      TEXT,                      -- 人臉裁切圖（相對於 records 資料夾），過期會刪
+    outcome   TEXT NOT NULL DEFAULT 'pending',   -- pending | unlocked | timeout | cancelled | door_failed
+    reported  INTEGER NOT NULL DEFAULT 0 -- 1 = 主人回報「這不是他」
+);
+CREATE INDEX IF NOT EXISTS idx_attempts_name ON attempts(name);
 CREATE INDEX IF NOT EXISTS idx_records_started ON records(started);
 CREATE INDEX IF NOT EXISTS idx_events_time ON events(time);
 """
@@ -153,7 +163,8 @@ class Storage:
             self.touch(event.data['name'])
         if event.kind in SKIP_EVENTS or not event.text:
             return
-        data = json.dumps(event.data, ensure_ascii=False) if event.data else None
+        clean = {k: v for k, v in event.data.items() if not k.startswith('_')}     # _crop 之類的影像不進資料庫
+        data = json.dumps(clean, ensure_ascii=False) if clean else None
         with self._lock:
             self.db.execute('INSERT INTO events (time, kind, text, data) VALUES (?, ?, ?, ?)',
                             (self.wallclock(), event.kind, event.text, data))
@@ -195,6 +206,70 @@ class Storage:
         return out
 
     # ==========================================
+    # 人臉嘗試（回報誤認用）
+    # ==========================================
+    def add_attempt(self, aid: str, name: str, distance: Optional[float], crop: Optional[str],
+                    outcome: str = 'pending') -> None:
+        with self._lock:
+            self.db.execute('INSERT OR IGNORE INTO attempts (id, time, name, distance, crop, outcome) '
+                            'VALUES (?, ?, ?, ?, ?, ?)', (aid, self.wallclock(), name, distance, crop, outcome))
+            self.db.commit()
+
+    def set_attempt(self, aid: str, **fields) -> None:
+        cols = [k for k in fields if k in ('outcome', 'reported', 'crop')]
+        if not cols:
+            return
+        with self._lock:
+            self.db.execute(f'UPDATE attempts SET {", ".join(c + "=?" for c in cols)} WHERE id=?',
+                            [fields[c] for c in cols] + [aid])
+            self.db.commit()
+
+    def get_attempt(self, aid: str) -> Optional[dict]:
+        with self._lock:
+            row = self.db.execute('SELECT * FROM attempts WHERE id=?', (aid,)).fetchone()
+        return dict(row) if row else None
+
+    def attempt_distances(self, name: str, reported: bool, outcome: Optional[str] = None) -> List[float]:
+        sql, args = 'SELECT distance FROM attempts WHERE name=? AND reported=? AND distance IS NOT NULL', [name, int(reported)]
+        if outcome:
+            sql, args = sql + ' AND outcome=?', args + [outcome]
+        with self._lock:
+            return [r[0] for r in self.db.execute(sql, args)]
+
+    def report_counts(self) -> Dict[str, int]:
+        with self._lock:
+            return {r[0]: r[1] for r in self.db.execute(
+                'SELECT name, COUNT(*) FROM attempts WHERE reported=1 GROUP BY name')}
+
+    def forget_attempts(self, name: str) -> None:
+        """刪除成員時：他的嘗試紀錄（含回報）一起清掉，同名的新成員不會沿用。"""
+        with self._lock:
+            rows = self.db.execute('SELECT crop FROM attempts WHERE name=? AND crop IS NOT NULL', (name,)).fetchall()
+            self.db.execute('DELETE FROM attempts WHERE name=?', (name,))
+            self.db.commit()
+        for (crop,) in rows:
+            self._unlink(crop)
+
+    def _unlink(self, rel):
+        try:
+            self.path(rel).unlink()
+        except (FileNotFoundError, ValueError):
+            pass
+
+    def _expire_attempts(self):
+        """人臉圖跟錄影一樣保留 record_max_days 天；距離數字留到 event_keep_days，回報過的永久保留（門檻靠它算）。"""
+        now = self.wallclock()
+        with self._lock:
+            old = self.db.execute('SELECT id, crop FROM attempts WHERE crop IS NOT NULL AND time < ?',
+                                  (now - self.cfg.record_max_days * 86400,)).fetchall()
+            self.db.execute('UPDATE attempts SET crop=NULL WHERE crop IS NOT NULL AND time < ?',
+                            (now - self.cfg.record_max_days * 86400,))
+            self.db.execute('DELETE FROM attempts WHERE reported=0 AND time < ?', (now - self.cfg.event_keep_days * 86400,))
+            self.db.commit()
+        for _, crop in old:
+            self._unlink(crop)
+
+    # ==========================================
     # 容量管理
     # ==========================================
     def usage(self) -> Usage:
@@ -232,6 +307,7 @@ class Storage:
         with self._lock:
             self.db.execute('DELETE FROM events WHERE time < ?', (self.wallclock() - cfg.event_keep_days * 86400,))
             self.db.commit()
+        self._expire_attempts()
         return removed
 
     def close(self):

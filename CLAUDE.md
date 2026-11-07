@@ -20,9 +20,21 @@ Pi Camera 3 NoIR ─▶ Raspberry Pi 5 (4GB) ──USB 序列埠──▶ Arduin
 - Arduino：送小寫 `unlock` / `lock` + `\n`，sketch 回 `Unlocked: ...` / `Locked`，8 秒後自動上鎖
 - 接線：UNO D7 → 低電位觸發繼電器 IN；鎖用獨立 12V 電源經繼電器 COM/NO（鎖的種類與 NO/NC 還沒確認），詳見 `docs/03_硬體接線.md`
 
-## 2. 目前狀態（v2.6.0）
+## 2. 目前狀態（v2.7.0）
 
-**v2.6 人臉辨識改版（2026-11-05）**：學弟 demo 時陌生人被認成 eric。用 LFW 5,524 位陌生人比較（單幀）：LBPH 門檻 70 誤認 8.6%；SFace 門檻 50 為 0%（門檻 55 時 1000 人中 1 人）。LBPH 誤認最嚴重的人多數沒戴眼鏡 → 主因是 LBPH 本身，眼鏡是次要。
+**v2.7 回報誤認（2026-11-07，claude.ai 雲端 session 做的，分支 `v2.7-report-sface`，從 `v2.6-sface` 開出）**
+- 時間軸上開鎖 / 手勢逾時旁有「這不是 某某？」→ 說明 → PIN（**每次都要 PIN**，同變更權限）→ 立即生效，不用重啟
+- `learning.py`：`AttemptLog`（訂閱事件，每次 master 人臉通過記一筆：人臉裁切、連續通過幾幀中最小距離、結果）、`Hardening`（report / undo / reset）
+- 兩道防線：① 個人門檻 `thresholds.json` = max(`FACE_REPORT_FLOOR`=35, 最像的已回報冒充者距離 − `FACE_REPORT_MARGIN`=3)，只會比預設嚴；檔案有 `scale: sface` 標記，LBPH 時代的舊檔自動忽略 ② 冒充者比對 `impostors/*.jpg`：新臉比任何成員照片都更像某張冒充者照片 → 當陌生人（`FaceResult.impostor`）
+- 取消回報：拿掉那筆特徵、重算門檻（不用 retrain）；成員頁「恢復預設判定標準」（PIN）；刪除成員會清掉他的門檻與嘗試紀錄（冒充者照片保留）
+- `door.py` 只多了 attempt 編號與 `_crop`（底線開頭的欄位不寫進 SQLite）；`gesture_cancel` / `gesture_timeout` / `unlock` / `door_failed` 帶 `attempt`
+- 人臉圖跟錄影一樣保留 `RECORD_MAX_DAYS`；回報過的那筆距離永久保留（門檻靠它重算）
+- **成員相簿永遠不會被自動加入照片**（理由見 `docs/05_資料污染與判定標準.md`）
+- margin 3 / floor 35 是依 v2.6 LFW 數據（本人最差距離 16、最像的陌生人 54）定的，**還沒用 Pi 門口資料驗證**
+- 前端已用 Playwright 在 375×548、390×664 看過（示範模式）；還沒在 Pi 上實測
+
+
+**v2.6 人臉辨識改版（2026-11-05）**：學弟 demo 時陌生人被認成 eric。用 LFW 5,524 位陌生人比較（單幀）：LBPH 門檻 70 誤認 8.6%；SFace 門檻 50 為 0 / 5,524（95% 信心上限約 0.054%，報告不要寫 0%；門檻 55 時 1000 人中 1 人）。LBPH 誤認最嚴重的人多數沒戴眼鏡 → 主因是 LBPH 本身，眼鏡是次要。
 - 使用者決定：**只用 Pi 自己拍的照片**、**不做 LBPH / SFace 切換**。PC 端訓練、PIN 開門後回收照片（需防模板污染）是之後居家助理的方向，還沒做
 - `train` 不訓練網路，只把 `faces/` 照片轉成特徵存 `face_feats.npz`；沒有這個檔時 `FaceRecognizer.load` 自動建立（舊資料免重拍）
 - 模型自動下載到 `models/`（huggingface opencv/…，有 SHA-256 檢查）；OpenCV 需 ≥ 4.8
@@ -53,7 +65,7 @@ Pi Camera 3 NoIR ─▶ Raspberry Pi 5 (4GB) ──USB 序列埠──▶ Arduin
 
 ```bash
 source .venv/bin/activate
-python -m pytest -q                 # 122 個測試，不需要相機、Arduino 或人臉模型（conftest 的 FakeFaceEngine）（Mac：118 passed, 4 skipped，序列埠 pty 測試只在 Linux 跑）
+python -m pytest -q                 # 136 個測試，不需要相機、Arduino 或人臉模型（conftest 的 FakeFaceEngine）（Mac：132 passed, 4 skipped，序列埠 pty 測試只在 Linux 跑）
 python app.py run --sim             # 完整系統，用模擬 Arduino
 python app.py records | cleanup | set-pin | test-camera | test-gesture | test-arduino | test-line
 # 只看版面（不用 Pi）：python tools/preview_web.py → http://localhost:8800（手機用區網 IP），自動示範模式，PIN 1234
@@ -70,17 +82,18 @@ smartlock/
   security.py          PinStore（PBKDF2，pin.json 0600）、load_env_file（自動讀 smartlock.env）
   events.py            EventBus：狀態機只發事件，其他模組訂閱
   door.py              DoorSystem 狀態機；process_frame() 可注入 clock，測試用假時鐘逐幀跑
-  face.py              FaceEngine（YuNet+SFace，測試換成假的：make_engine）、辨識、capture、train（登錄特徵）、set_role
+  face.py              FaceEngine（YuNet+SFace，測試換成假的：make_engine）、辨識、capture、train（登錄特徵）、set_role、個人門檻、冒充者比對
+  learning.py          回報誤認：AttemptLog、Hardening（report / undo / reset）
   gesture.py / arduino.py / camera.py / display.py / qr.py
   sentinel.py          哨兵：預錄緩衝、固定幀率取樣（迴圈慢時補幀）、背景寫檔 MJPG .avi
-  storage.py           SQLite（records / events / presence）+ 容量管理（天數 / 總量 / SD 剩餘）
+  storage.py           SQLite（records / events / presence / attempts）+ 容量管理（天數 / 總量 / SD 剩餘）
   line.py              LineClient（額度 10 分鐘快取、send：push/broadcast + retry key）、LineNotifier（訂閱事件、背景佇列、冷卻、低額度只發重要）
   web/server.py        Flask API + PinGuard（5 次錯鎖 60 秒）+ StreamRegistry
   web/templates/index.html, web/static/app.js, app.css, qrcode.min.js（MIT，內嵌）
   cli.py               指令、run() 組裝所有元件
 tests/                 conftest.py 有 Harness（假辨識器 / 假手勢 / 假 Arduino / 假時鐘）
 deploy/                smartlock.service、install_service.sh、smartlock.env.example
-docs/                  01 居家助理未來規劃（概念階段）、02 智慧門鎖優化規劃、03 硬體接線、04 人臉辨識改版 v2.6（LBPH → SFace 的比較與改動）
+docs/                  01 居家助理未來規劃（概念階段）、02 智慧門鎖優化規劃、03 硬體接線、04 人臉辨識改版 v2.6（LBPH → SFace 的比較與改動）、05 資料污染與判定標準（回報誤認的原理、FAR/FRR、和強化學習的差別）
 ```
 
 **不要破壞的規則**
@@ -128,6 +141,8 @@ docs/                  01 居家助理未來規劃（概念階段）、02 智慧
 
 ### Git / GitHub
 
+- **兩個 Claude 共用這個 repo**：本地 Claude Code，和 claude.ai 的雲端 session（透過桌面 App 連結這個資料夾，以 git bundle 傳遞 commit）。對話內容不互通，**交接靠這份 CLAUDE.md 和 `git log`**；開工前先 `git log --oneline --all -10`。同一時間只在一個分支上改，不要兩邊同時改同一個分支
+
 - Repo：`~/GITHUB/smart-door-lock`（使用者所有 git 專案都放在 `~/GITHUB/`）→ GitHub `Ehsu745/smart-door-lock`，**目前是 private**
 - `git log` 從最舊到最新完整保留：PC 測試版（10/14）→ Pi 單檔版 → 手勢單檔版（10/19、10/20）→ v2 模組化（11/03）→ v2.x（11/04）。舊版原始檔在 `~/FCU/CE_2026/AI_smartlock_playground/old_ver/`，不要動
 - 遠端有 `backup/pre-rebuild` 分支（2026-11-04 重建歷史前的 main），確認沒問題後可刪
@@ -162,6 +177,6 @@ docs/                  01 居家助理未來規劃（概念階段）、02 智慧
 
 ## 9. 隱私與機密
 
-- 不要 commit：`faces/`、`face.yml`、`face_feats.npz`、`id_map.txt`、`models/`、`records/`、`pin.json`、`smartlock.env`（都在 `.gitignore`）；`.gitignore` 另外擋掉任何位置的 `*.db*`、`*.sqlite*`、`*.avi`、`*.mp4`、`*.task`、`*.env`（`*.env.example` 除外）
+- 不要 commit：`faces/`、`face.yml`、`face_feats.npz`、`id_map.txt`、`models/`、`impostors/`、`thresholds.json`、`records/`、`pin.json`、`smartlock.env`（都在 `.gitignore`）；`.gitignore` 另外擋掉任何位置的 `*.db*`、`*.sqlite*`、`*.avi`、`*.mp4`、`*.task`、`*.env`（`*.env.example` 除外）
 - 紀錄頁、成員頁、設定頁都需要 PIN（含人臉影像）
 - 大型語言模型或任何自動化**不能自己開鎖**（居家助理規劃的原則）

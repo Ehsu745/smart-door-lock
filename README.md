@@ -80,6 +80,17 @@ bash deploy/install_service.sh --desktop # 登入桌面後在 Pi 螢幕顯示視
 - 沒有 PIN 的手機按開鎖只會跳出鍵盤，不算 PIN 錯誤，不會觸發鎖定。
 - 預覽版面不用接 Pi：直接雙擊 `smartlock/web/templates/index.html`，會自動進入示範模式（示範 PIN 1234）。
 
+## 回報誤認（這不是我）
+
+- 每次主人人臉通過都會記一筆（人臉小圖、距離、結果）。手機「紀錄」頁的開鎖 / 手勢逾時旁邊有「**這不是 某某？**」（**每次都要 PIN**）。
+- 回報後立即生效，不用重新啟動：
+  - **冒充者比對**：這張臉存進 `impostors/`。之後只要門口的臉比任何成員照片都更像某張冒充者照片，一律當陌生人。
+  - **收緊門檻**：那個人的門檻收到「回報過最像的冒充者距離 − 3」，最低 35（`thresholds.json`）；只會變嚴，不會變鬆。
+- 新門檻會擋掉本人超過 20% 的開鎖紀錄，或那張臉跟本人幾乎一樣時，會跳出警告。
+- 回報錯了按「取消回報」（拿掉那筆特徵、重算門檻）；重新拍照 train 之後可在成員頁「恢復預設判定標準」。兩者都要 PIN。
+- **成員自己的照片永遠不會被自動加入或更動**。原理與限制見 `docs/05_資料污染與判定標準.md`。
+- 調整：`FACE_REPORT_MARGIN`（預設 3）、`FACE_REPORT_FLOOR`（預設 35）。這兩個數字還沒用門口實測資料驗證。
+
 ## LINE 通知
 
 1. 在 `smartlock.env` 加上 `LINE_CHANNEL_TOKEN=`（Developers Console → Messaging API）和 `LINE_BASIC_ID=@你的帳號`
@@ -108,7 +119,8 @@ smartlock/
   security.py          PIN 雜湊儲存、smartlock.env 載入
   line.py              LINE 額度查詢 + 通知（訪客、陌生人錄影、開鎖失敗；背景發送）
   door.py              狀態機（人臉 → 手勢 → 開鎖），不碰硬體，可單獨測試
-  face.py              人臉偵測（YuNet）、辨識（SFace）、採集、登錄
+  face.py              人臉偵測（YuNet）、辨識（SFace）、採集、登錄、個人門檻與冒充者比對
+  learning.py          回報誤認：嘗試紀錄、收緊門檻、冒充者、取消回報
   gesture.py           MediaPipe 手勢（含備援規則）
   arduino.py           序列埠協定（+ 模擬 Arduino）
   camera.py            rpicam / Picamera2 / USB 相機
@@ -116,7 +128,7 @@ smartlock/
   qr.py                控制頁 QR code
   web/                 Flask API + 單頁 App（templates/index.html、static/app.js、app.css）
   cli.py               指令列與選單
-tests/                 119 個自動測試，不需要相機或 Arduino
+tests/                 136 個自動測試，不需要相機或 Arduino
 deploy/                systemd 服務與安裝腳本
 arduino/door_lock/     學弟的 Arduino sketch
 ```
@@ -130,4 +142,5 @@ arduino/door_lock/     學弟的 Arduino sketch
 - **容量管理**：依容量 / 天數 / SD 剩餘空間自動刪最舊的、中斷的錄影標成不完整、路徑不能跑出 records 資料夾。
 - **PIN 與登入**：雜湊不存明碼、檔案權限 600、檔案優先於 CONTROL_PIN、set-pin 後執行中系統自動套用、改 PIN 後其他手機失效、沒附 PIN 不算錯誤。
 - **新 API**：成員與頭像、設定、時間軸附錄影資訊（已刪除的錄影會標示）、LINE 額度快取與 token 錯誤。
+- **回報誤認**：冒充者只擋長得像的那個人、本人照常、個人門檻只會變嚴、LBPH 舊門檻檔被忽略、嘗試紀錄與結果、人臉圖過期、端對端回報 → 再來開不了門 → 重啟仍有效 → 取消回報恢復、每次都要 PIN、門檻下限與擋到本人的警告、恢復預設、刪除成員一起清掉。
 - **其他**：設定讀取（含 smartlock.env）、手勢規則、QR code 可解碼、登錄保留 guest 分類、舊資料自動建立特徵。

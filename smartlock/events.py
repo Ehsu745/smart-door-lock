@@ -2,7 +2,7 @@
 
 事件種類（kind）
   seen             看到某人（名字改變時才發）
-  face_passed      master 人臉通過，開始等手勢
+  face_passed      master 人臉通過，開始等手勢（data: attempt, name, distance, _crop）
   gesture_cancel   等手勢時人離開
   gesture_timeout  手勢逾時
   guest_detected   偵測到訪客（data: name）
@@ -10,6 +10,7 @@
   door_failed      送指令失敗（data: command, message）
   auto_resumed     恢復自動開鎖
   pin_rejected     網頁 PIN 錯誤（data: remote）
+  impostor_reported / impostor_undone / threshold_reset   回報誤認相關（learning.py）
   info             其他訊息
 """
 from __future__ import annotations

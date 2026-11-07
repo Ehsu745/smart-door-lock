@@ -42,6 +42,10 @@ const Real = {
   snapshot: (id) => `/records/${id}/snapshot.jpg`,
   play: (id, speed = 1) => `/records/${id}/play?speed=${speed}&t=${Date.now()}`,
   download: (id) => `/records/${id}/download`,
+  attemptCrop: (id) => `/api/attempts/${id}/crop.jpg`,
+  report: (id, pin) => post(`/api/attempts/${id}/report`, { pin }),
+  undoReport: (id, pin) => post(`/api/attempts/${id}/undo`, { pin }),
+  resetThreshold: (name, pin) => post(`/api/users/${encodeURIComponent(name)}/threshold/reset`, { pin }),
 };
 
 const Demo = (() => {
@@ -52,19 +56,21 @@ const Demo = (() => {
   const ev = (dt, kind, text, extra = {}) => ({ id: nextId--, time: t0 - dt, kind, text, data: {}, ...extra });
   const events = [
     ev(120, 'lock', '自動上鎖'),
-    ev(128, 'unlock', '人臉 eric + 手勢 YA(Victory) → 已開鎖'),
+    ev(128, 'unlock', '人臉 eric + 手勢 YA(Victory) → 已開鎖', { attempt: { id: 'demo1', name: 'eric', crop: false, reported: false, distance: 31.2 } }),
     ev(1800, 'sentinel_saved', '哨兵：錄影 #12 已儲存（23 秒）', { clip: { id: 12, duration: 23, snapshot: false, status: 'done' } }),
     ev(3600, 'guest_detected', '偵測到訪客：amy，建議開鎖'),
     ev(3550, 'unlock', '手動解鎖（手機） → 已開鎖'),
     ev(3600 * 5, 'pin_rejected', '網頁 PIN 錯誤（192.168.1.23）'),
     ev(day + 600, 'gesture_timeout', 'yang 手勢逾時（8 秒），3 秒後可重試'),
-    ev(day + 560, 'unlock', '人臉 yang + 手勢 讚(Thumb_Up) → 已開鎖'),
+    ev(day + 560, 'unlock', '人臉 yang + 手勢 讚(Thumb_Up) → 已開鎖', { attempt: { id: 'demo2', name: 'yang', crop: false, reported: false, distance: 46.8 } }),
     ev(day + 7200, 'sentinel_saved', '哨兵：錄影 #11 已儲存（61 秒）', { clip: { id: 11, duration: 61, snapshot: false, status: 'done' } }),
     ev(9 * day, 'sentinel_saved', '哨兵：錄影 #3 已儲存（14 秒）', { clip: { id: 3, deleted: true } }),
     ev(2 * day + 4000, 'door_failed', '手動解鎖（手機） → UNLOCK 失敗：Arduino 沒有回應'),
   ];
   const demoUsers = [{ name: 'eric', role: 'master', photos: 30, last_seen: t0 - 128 }, { name: 'yang', role: 'master', photos: 30, last_seen: t0 - day - 560 },
-    { name: 'amy', role: 'guest', photos: 30, last_seen: t0 - 3600 }, { name: 'kevin', role: 'guest', photos: 24, last_seen: null }];
+    { name: 'amy', role: 'guest', photos: 30, last_seen: t0 - 3600 }, { name: 'kevin', role: 'guest', photos: 24, last_seen: null }]
+    .map((u) => ({ threshold: 50, reports: 0, ...u }));
+  const findAttempt = (id) => events.find((e) => e.attempt && e.attempt.id === id);
   const push = (kind, text) => events.unshift({ id: 1000 + events.length, time: now(), kind, text, data: {} });
   const authed = () => st.loggedIn;
   const need = () => { if (!authed()) throw new AuthError('需要輸入 PIN'); };
@@ -139,6 +145,32 @@ const Demo = (() => {
       push('member_deleted', `網頁刪除成員 ${name}（示範）`);
       return { ok: true, message: `已刪除 ${name}` };
     },
+    async report(id, pin) {
+      need();
+      if (pin !== st.pin) return { ok: false, status: 403, message: 'PIN 錯誤' };
+      const e = findAttempt(id), u = demoUsers.find((x) => x.name === e.attempt.name);
+      const before = u.threshold, after = Math.min(before, Math.max(35, Math.round((e.attempt.distance - 3) * 10) / 10));
+      e.attempt.reported = true; u.threshold = after; u.reports += 1;
+      push('impostor_reported', `回報誤認：有人被認成 ${u.name}；門檻 ${before} → ${Math.round(after)}（示範）`);
+      return { ok: true, name: u.name, before, after, impostor_added: false, message: `已收緊 ${u.name} 的判定標準（示範沒有人臉圖）`,
+        warning: after <= 35 ? `這張臉跟 ${u.name} 非常像，門檻已收到下限。如果其實是 ${u.name} 本人，請按「取消回報」` : null };
+    },
+    async undoReport(id, pin) {
+      need();
+      if (pin !== st.pin) return { ok: false, status: 403, message: 'PIN 錯誤' };
+      const e = findAttempt(id), u = demoUsers.find((x) => x.name === e.attempt.name);
+      e.attempt.reported = false; u.reports = Math.max(0, u.reports - 1); if (!u.reports) u.threshold = 50;
+      push('impostor_undone', `取消回報：${u.name} 的誤認紀錄已移除（示範）`);
+      return { ok: true, message: `已取消回報，${u.name} 的判定標準已重算` };
+    },
+    async resetThreshold(name, pin) {
+      need();
+      if (pin !== st.pin) return { ok: false, status: 403, message: 'PIN 錯誤' };
+      demoUsers.find((x) => x.name === name).threshold = 50;
+      push('threshold_reset', `${name} 的判定標準恢復預設（示範）`);
+      return { ok: true, message: `${name} 的判定標準已恢復預設` };
+    },
+    attemptCrop: () => '',
     async deleteRecord(id) { need(); const e = events.find((x) => x.clip && x.clip.id === id); if (e) e.clip = { id, deleted: true }; return { ok: true, message: `已刪除錄影 #${id}` }; },
     photo: () => '',
     snapshot: () => '',
@@ -458,12 +490,29 @@ function personSheet(i) {
       <div class="row"><span>開門方式</span><span class="v">${ROLE_DESC[p.role]}</span></div>
       <div class="row"><span>訓練照片</span><span class="v">${p.photos} 張</span></div>
       <div class="row"><span>最近出現</span><span class="v">${ago(p.last_seen)}</span></div>
+      ${p.role === 'master' ? `<div class="row"><span>判定標準</span><span class="v">${strictLabel(p)}</span></div>` : ''}
     </div>
     <div class="sheet-label">管理</div>
     <div class="sheet-card">
       <button class="row link go" onclick="roleSheet(${i})">
         <span>修改權限<small>變更主人 / 訪客、刪除成員資料</small></span><span class="v">›</span></button>
+      ${tightened(p) ? `<button class="row link go" onclick="resetThreshold(${i})">
+        <span>恢復預設判定標準<small>在門口重新拍照、train 之後再用；回報過的冒充者照片會保留</small></span><span class="v">›</span></button>` : ''}
     </div>`);
+}
+const tightened = (p) => p.threshold != null && p.threshold < (p.default_threshold ?? 50);
+function strictLabel(p) {
+  if (!tightened(p)) return '預設';
+  return `已收緊（門檻 ${Math.round(p.threshold)}，${p.reports} 次回報）`;
+}
+function resetThreshold(i) {
+  const p = people[i];
+  askPin({
+    title: `輸入 PIN 恢復 ${p.name} 的判定標準`,
+    note: '門檻改回預設；冒充者照片保留',
+    submit: (pin) => Api.resetThreshold(p.name, pin).catch((e) => ({ ok: false, message: e.message })),
+    done: async (r) => { toast(r.message); await renderPeople(); const k = people.findIndex((x) => x.name === p.name); if (k >= 0) personSheet(k); },
+  });
 }
 
 // 修改權限：iOS 風格滾輪選主人 / 訪客，沒有套用鍵 —— 離開這頁（‹ 返回、✕、點背景、Esc）時才生效：
@@ -597,11 +646,12 @@ function changeRole(i, role, how = 'close') {
    3. 紀錄：依日期分組的時間軸
    ========================================================= */
 const FILTERS = [['全部', null], ['開鎖', ['unlock', 'lock', 'door_failed']], ['訪客', ['guest_detected']],
-  ['錄影', ['sentinel_saved']], ['異常', ['door_failed', 'pin_rejected', 'gesture_timeout']]];
+  ['錄影', ['sentinel_saved']], ['異常', ['door_failed', 'pin_rejected', 'gesture_timeout', 'impostor_reported']]];
 const HIDE_IN_ALL = ['face_passed', 'stranger_detected', 'gesture_cancel', 'info'];   // 重複或太細的事件
 const KIND_CLASS = { unlock: 'unlock', lock: 'lock', guest_detected: 'guest', sentinel_saved: 'sentinel',
-  door_failed: 'alert', pin_rejected: 'alert', gesture_timeout: 'alert', pin_changed: 'lock', role_changed: 'lock', member_deleted: 'alert' };
-let filter = 0, events = [], lastEventId = null;
+  door_failed: 'alert', pin_rejected: 'alert', gesture_timeout: 'alert', pin_changed: 'lock', role_changed: 'lock', member_deleted: 'alert',
+  impostor_reported: 'alert', impostor_undone: 'lock', threshold_reset: 'lock' };
+let filter = 0, events = [], lastEventId = null, tlMore = false;
 
 function dayLabel(t) {
   const d = new Date(t * 1000), today = new Date();
@@ -628,7 +678,7 @@ function collapse(list) {
   const out = [];
   for (const e of list) {
     const prev = out[out.length - 1];
-    if (prev && !e.clip && prev.kind === e.kind && prev.text === e.text && prev.first - e.time < 600) {
+    if (prev && !e.clip && !e.attempt && !prev.attempt && prev.kind === e.kind && prev.text === e.text && prev.first - e.time < 600) {
       prev.count += 1; prev.first = e.time;
     } else out.push({ ...e, count: 1, first: e.time });
   }
@@ -642,10 +692,58 @@ function drawTimeline(hasMore) {
     const d = dayLabel(e.time);
     if (d !== curDay) { if (curDay) html += '</div>'; html += `<div class="day">${d}</div><div class="tl">`; curDay = d; }
     html += `<div class="ev ${KIND_CLASS[e.kind] || ''}"><time>${hm(e.time)}</time><span class="node"></span>
-      <div class="txt">${esc(e.text)}${e.count > 1 ? `<span class="rep" title="${hm(e.first)} 起">×${e.count}</span>` : ''}${e.clip ? clipCard(e.clip) : ''}</div></div>`;
+      <div class="txt">${esc(e.text)}${e.count > 1 ? `<span class="rep" title="${hm(e.first)} 起">×${e.count}</span>` : ''}${e.clip ? clipCard(e.clip) : ''}${e.attempt ? attemptRow(e.attempt) : ''}</div></div>`;
   }
   html += '</div>' + (hasMore ? '<button class="more" onclick="renderTimeline(false)">載入更早的紀錄</button>' : '');
   $('timeline').innerHTML = html;
+}
+// 「這不是 某某」：一次人臉通過（開鎖、手勢逾時…）附人臉小圖，回報與取消都每次要 PIN
+function attemptRow(a) {
+  const src = a.crop && Api.attemptCrop(a.id);
+  const img = src ? `<span class="face"><img src="${src}" alt="" loading="lazy" onerror="this.parentNode.remove()"></span>` : '';
+  return `<div class="attempt${a.reported ? ' reported' : ''}">${img}
+    ${a.reported ? `<span class="tag">已回報不是 ${esc(a.name)}</span><button class="link-btn" onclick="undoSheet('${a.id}')">取消回報</button>`
+      : `<button class="link-btn" onclick="reportSheet('${a.id}')">這不是 ${esc(a.name)}？</button>`}</div>`;
+}
+const attemptOf = (id) => (events.find((e) => e.attempt && e.attempt.id === id) || {}).attempt;
+function reportSheet(id) {
+  const a = attemptOf(id);
+  if (!a) return;
+  const src = a.crop && Api.attemptCrop(a.id);
+  openSheet(`<h3>這不是 ${esc(a.name)}？</h3>
+    ${src ? `<img class="attempt-big" src="${src}" alt="被認成 ${esc(a.name)} 的人臉">` : '<div class="infobox">這筆的人臉圖已超過保存期限，只能收緊判定標準。</div>'}
+    <div class="infobox">回報後：
+      <br>・這張臉之後<b>一律當陌生人</b>（不會再被認成任何成員）
+      <br>・${esc(a.name)} 的判定標準會<b>收緊</b>，比這張臉更像才算是他
+      <br>・${esc(a.name)} 自己的照片不會被更動；回報錯了可以按「取消回報」</div>
+    <div class="acts-2">
+      <button class="btn ghost" onclick="closeSheet()">取消</button>
+      <button class="btn danger" onclick="reportAttempt('${a.id}')">回報誤認</button>
+    </div>`);
+}
+function reportAttempt(id) {
+  const a = attemptOf(id);
+  askPin({
+    title: `輸入 PIN 回報「這不是 ${a.name}」`,
+    submit: (pin) => Api.report(id, pin).catch((e) => ({ ok: false, message: e.message })),
+    done: (r) => {
+      a.reported = true; drawTimeline(tlMore);
+      if (r.warning) openSheet(`<h3>已回報</h3><div class="warnbox">${esc(r.warning)}</div>
+        <div class="acts-2"><button class="btn ghost" onclick="closeSheet()">知道了</button>
+        <button class="btn ghost" onclick="undoSheet('${id}')">取消回報</button></div>`);
+      else toast(r.message);
+    },
+  });
+}
+function undoSheet(id) {
+  const a = attemptOf(id);
+  if (!a) return;
+  askPin({
+    title: `輸入 PIN 取消回報（${a.name}）`,
+    note: '這張臉會恢復正常比對，判定標準依剩下的回報重算',
+    submit: (pin) => Api.undoReport(id, pin).catch((e) => ({ ok: false, message: e.message })),
+    done: (r) => { a.reported = false; drawTimeline(tlMore); toast(r.message); },
+  });
 }
 function renderTimeline(reset) {
   renderChips();
@@ -655,7 +753,8 @@ function renderTimeline(reset) {
     const batch = await Api.events(FILTERS[filter][1], lastEventId);
     events = events.concat(batch);
     if (batch.length) lastEventId = batch[batch.length - 1].id;
-    drawTimeline(!DEMO && batch.length >= 60);
+    tlMore = !DEMO && batch.length >= 60;
+    drawTimeline(tlMore);
     if (!reset) $('timeline').scrollTop = scroll;
   });
 }

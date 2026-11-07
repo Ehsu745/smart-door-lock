@@ -10,6 +10,8 @@ face.yml
 face_feats.npz
 id_map.txt
 models/
+impostors/
+thresholds.json
 
 # 機密設定（PIN、之後的 LINE token）
 smartlock.env

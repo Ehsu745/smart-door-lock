@@ -6,6 +6,7 @@
   /video_feed                     即時影像 MJPEG
   /api/session、/api/login、/api/logout、/api/pin（變更 PIN）
   /api/users、/api/users/<name>/photo、/api/users/<name>/role、/api/users/<name>/delete（後兩者每次都要 PIN）
+  /api/attempts/<id>/crop.jpg、/api/attempts/<id>/report|undo、/api/users/<name>/threshold/reset（後三者每次都要 PIN）
   /api/events、/api/records、/records/<id>/play|snapshot.jpg|download、DELETE /api/records/<id>
   /api/settings
 
@@ -25,6 +26,9 @@ from ..face import ROLES, delete_member, photos_of as face_photos, set_role
 from ..security import PIN_RULE, PinStore
 
 WEB_DIR = Path(__file__).resolve().parent
+
+# 時間軸上可以回報誤認的事件（一次嘗試只在最後結果那筆顯示，face_passed 不重複顯示）
+ATTEMPT_EVENTS = ('unlock', 'gesture_timeout', 'gesture_cancel', 'door_failed')
 
 MAX_FAILS = 5
 LOCKOUT_SECONDS = 60.0
@@ -127,7 +131,7 @@ class _StaticPin:
         return hmac.compare_digest(str(pin or ''), self.pin)
 
 
-def create_web(system, storage=None, line=None, notifier=None):
+def create_web(system, storage=None, line=None, notifier=None, hardening=None):
     from flask import (Flask, Response, abort, jsonify, redirect, request, send_file, send_from_directory, session)
 
     cfg = system.cfg
@@ -311,7 +315,11 @@ def create_web(system, storage=None, line=None, notifier=None):
     def users():
         need_login()
         seen = storage.last_seen() if storage is not None else {}
-        out = [{'name': n, 'role': k, 'photos': len(photos_of(n)), 'last_seen': seen.get(n)}
+        reports = storage.report_counts() if storage is not None else {}
+        thr = getattr(system.recognizer, 'threshold_for', None)
+        out = [{'name': n, 'role': k, 'photos': len(photos_of(n)), 'last_seen': seen.get(n),
+                'threshold': thr(n) if thr else cfg.threshold, 'default_threshold': cfg.threshold,
+                'reports': reports.get(n, 0)}
                for n, k in sorted(members().items())]
         return jsonify(users=out)
 
@@ -357,6 +365,7 @@ def create_web(system, storage=None, line=None, notifier=None):
             return jsonify(success=False, message=f'刪除時發生錯誤：{e}'), 500
         if storage is not None:
             storage.forget(name)
+            storage.forget_attempts(name)
         system.emit('member_deleted', f'網頁刪除成員 {name}（{count} 張照片，已重新訓練）（{request.remote_addr}）',
                     name=name, photos=count, remote=request.remote_addr)
         masters = sum(1 for k in members().values() if k == 'master')
@@ -373,6 +382,66 @@ def create_web(system, storage=None, line=None, notifier=None):
         return send_file(files[len(files) // 2], mimetype='image/jpeg', max_age=600)
 
     # ==========================================
+    # 回報誤認
+    # ==========================================
+    def need_hardening():
+        need_storage()
+        if hardening is None:
+            abort(404)
+
+    @app.route('/api/attempts/<aid>/crop.jpg')
+    def attempt_crop(aid):
+        need_storage()
+        att = storage.get_attempt(aid)
+        if not att or not att['crop']:
+            abort(404)
+        path = storage.path(att['crop'])
+        if not path.exists():
+            abort(404)
+        return send_file(path, mimetype='image/jpeg', max_age=3600)
+
+    @app.route('/api/attempts/<aid>/report', methods=['POST'])
+    def attempt_report(aid):
+        """「這不是 某某」：收緊門檻 + 加入冒充者比對。每次都要 PIN。"""
+        need_hardening()
+        refused = pin_every_time(request.get_json(silent=True) or {})
+        if refused:
+            return refused
+        try:
+            r = hardening.report(aid, request.remote_addr)
+        except KeyError:
+            abort(404)
+        except ValueError as e:
+            return jsonify(success=False, message=str(e)), 400
+        msg = f'已回報：之後這張臉不會再被認成 {r["name"]}' if r['impostor_added'] else f'已收緊 {r["name"]} 的判定標準'
+        return jsonify(success=True, message=msg, **r)
+
+    @app.route('/api/attempts/<aid>/undo', methods=['POST'])
+    def attempt_undo(aid):
+        need_hardening()
+        refused = pin_every_time(request.get_json(silent=True) or {})
+        if refused:
+            return refused
+        try:
+            r = hardening.undo(aid, request.remote_addr)
+        except KeyError:
+            abort(404)
+        except ValueError as e:
+            return jsonify(success=False, message=str(e)), 400
+        return jsonify(success=True, message=f'已取消回報，{r["name"]} 的判定標準已重算', **r)
+
+    @app.route('/api/users/<name>/threshold/reset', methods=['POST'])
+    def user_threshold_reset(name):
+        need_hardening()
+        refused = pin_every_time(request.get_json(silent=True) or {})
+        if refused:
+            return refused
+        if name not in members():
+            abort(404)
+        hardening.reset(name, request.remote_addr)
+        return jsonify(success=True, message=f'{name} 的判定標準已恢復預設', threshold=cfg.threshold)
+
+    # ==========================================
     # 紀錄
     # ==========================================
     @app.route('/api/events')
@@ -382,6 +451,12 @@ def create_web(system, storage=None, line=None, notifier=None):
         kinds = [k for k in request.args.get('kinds', '').split(',') if k] or None
         items = storage.list_events(limit, kinds, request.args.get('before', type=int))
         for e in items:
+            aid = e['data'].get('attempt') if e['kind'] in ATTEMPT_EVENTS else None
+            if aid:
+                att = storage.get_attempt(aid)
+                if att:
+                    e['attempt'] = {'id': aid, 'name': att['name'], 'crop': bool(att['crop']),
+                                    'reported': bool(att['reported']), 'distance': att['distance']}
             rid = e['data'].get('record_id') if e['kind'] == 'sentinel_saved' else None
             if rid:
                 rec = storage.get(rid)

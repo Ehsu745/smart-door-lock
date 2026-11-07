@@ -38,6 +38,7 @@ from .door import DoorSystem
 from .events import EventBus
 from .face import FaceRecognizer, capture, make_engine, train
 from .gesture import GestureDetector, draw_hand
+from .learning import AttemptLog, Hardening
 from .config import PROJECT_ROOT
 from .qr import control_url, print_qr
 from .line import LineClient, LineError, LineNotifier
@@ -96,6 +97,8 @@ def run(cfg: Config):
     system.info = {'camera': camera.name, 'gesture': getattr(gesture, 'mode', '') if gesture else '未使用'}
     storage = Storage(cfg)
     system.bus.subscribe('*', storage.log_event)      # 所有事件寫入 SQLite（網頁「事件紀錄」）
+    AttemptLog(cfg, storage, system.bus)              # 每次人臉通過記一筆，給「這不是 某某」回報用
+    hardening = Hardening(cfg, storage, recognizer, system.bus)
     removed = storage.enforce()
     if removed:
         log.info('啟動時清掉 %d 段過期 / 超量的錄影', removed)
@@ -123,7 +126,7 @@ def run(cfg: Config):
     if line is not None and cfg.line_notify:
         notifier = LineNotifier(line, system.bus, user_id=cfg.line_user_id, cooldown=cfg.line_cooldown)
         log.info('LINE 通知：%s（訪客、陌生人錄影、開鎖失敗）', '只推給 LINE_USER_ID' if cfg.line_user_id else '廣播給所有好友')
-    web = create_web(system, storage, line, notifier)
+    web = create_web(system, storage, line, notifier, hardening)
     threading.Thread(target=serve_web, args=(web, cfg.web_port, system.stop), daemon=True, name='web').start()
 
     url = control_url(cfg)

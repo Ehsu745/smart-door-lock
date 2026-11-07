@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import uuid
 from typing import Callable, Optional
 
 import cv2
@@ -20,6 +21,7 @@ import cv2
 from .camera import FrameReader
 from .config import GESTURE_LABEL, Config
 from .events import Event, EventBus, EventLog
+from .face import face_crop
 from .gesture import draw_hand
 
 log = logging.getLogger(__name__)
@@ -58,6 +60,9 @@ class DoorSystem:
         # ---- 狀態機內部狀態 ----
         self._candidate = None               # 目前連續被認出的 master 編號
         self._streak = 0
+        self._streak_min = None              # 這段連續通過中最小的距離（回報誤認時用來收緊門檻）
+        self._cand_face = None               # (灰階畫面, 臉框)：最新一幀，人臉通過時裁切存檔
+        self._attempt = None                 # 目前這次嘗試的編號（人臉通過 → 開鎖 / 逾時 / 離開）
         self._armed = True                   # False = 剛開過鎖，要等人離開才再允許
         self._absent_since = None
         self._last_name = None
@@ -107,8 +112,8 @@ class DoorSystem:
                 log.exception('狀態提供者 %s 失敗', name)
         return data
 
-    def door(self, command: str, reason: str):
-        """送開鎖／上鎖指令給 Arduino，並發出對應事件。回傳 (ok, message)。"""
+    def door(self, command: str, reason: str, **extra):
+        """送開鎖／上鎖指令給 Arduino，並發出對應事件。回傳 (ok, message)。extra 併入事件資料（例如 attempt）。"""
         ok, msg = self.arduino.send(command)
         if ok:
             self.unlocked_until = self.clock() + self.cfg.unlock_seconds if command == 'UNLOCK' else 0.0
@@ -118,9 +123,9 @@ class DoorSystem:
         done = '已開鎖' if command == 'UNLOCK' else '已上鎖'
         text = f'{reason} → {done}' if ok else f'{reason} → {"開鎖" if command == "UNLOCK" else "上鎖"}失敗：{msg}'
         if ok:
-            self.emit(command.lower(), text, reason=reason)
+            self.emit(command.lower(), text, reason=reason, **extra)
         else:
-            self.emit('door_failed', text, command=command, message=msg)
+            self.emit('door_failed', text, command=command, message=msg, **extra)
         return ok, msg
 
     # ==========================================
@@ -155,10 +160,12 @@ class DoorSystem:
         self._track_visitor(guest_label, name, now)
         self._track_rearm(len(faces), now)
         if accepted is not None:
-            self._streak = self._streak + 1 if self._candidate == accepted else 1
-            self._candidate = accepted
+            same = self._candidate == accepted
+            self._streak = self._streak + 1 if same else 1
+            self._streak_min = min(self._streak_min, best) if same and self._streak_min is not None else best
+            self._candidate, self._cand_face = accepted, (gray, faces[0].box)
         else:
-            self._candidate, self._streak = None, 0
+            self._candidate, self._streak, self._streak_min, self._cand_face = None, 0, None, None
 
         g_name, g_score = self._advance(frame, accepted, name, now)
         for hook in self.frame_hooks:
@@ -202,6 +209,12 @@ class DoorSystem:
         else:
             self._absent_since = None
 
+    def _new_attempt(self, name) -> dict:
+        """人臉通過：開一筆嘗試。_crop 是給 AttemptLog 存檔的人臉圖，底線開頭的欄位不會寫進資料庫。"""
+        crop = face_crop(*self._cand_face) if self._cand_face else None
+        return {'attempt': uuid.uuid4().hex[:12], 'name': name,
+                'distance': None if self._streak_min is None else round(float(self._streak_min), 1), '_crop': crop}
+
     def _advance(self, frame, accepted, name, now):
         """推進 face / gesture 階段。回傳這一幀的 (手勢名稱, 信心值)。"""
         cfg = self.cfg
@@ -212,14 +225,16 @@ class DoorSystem:
             self._phase = 'face'
         elif self._phase == 'face':
             if self._armed and self._streak >= cfg.required_frames and now >= self._cooldown_until:
+                att = self._new_attempt(name)
                 if self.gesture is None:
                     self._armed = False
-                    self.door('UNLOCK', f'辨識成功 {name}')
+                    self.door('UNLOCK', f'辨識成功 {name}', **att)
                 else:
                     self._phase, self._target, self._target_name = 'gesture', self._candidate, name
                     self._deadline, self._last_seen, self._g_streak, self._g_last = now + cfg.gesture_window, now, 0, None
+                    self._attempt = att['attempt']
                     self.emit('face_passed', f'人臉通過 {name} → 請比出手勢：' + ' 或 '.join(cfg.gesture_labels()),
-                              name=name)
+                              **att)
         elif self._phase == 'gesture':
             if accepted == self._target:
                 self._last_seen = now
@@ -237,14 +252,16 @@ class DoorSystem:
                             0.8, (0, 220, 0) if ok_g else (0, 160, 255), 2)
             if self._g_streak >= cfg.gesture_frames:
                 self._armed, self._phase = False, 'face'
-                self.door('UNLOCK', f'人臉 {self._target_name} + 手勢 {GESTURE_LABEL.get(g_name, g_name)}')
+                self.door('UNLOCK', f'人臉 {self._target_name} + 手勢 {GESTURE_LABEL.get(g_name, g_name)}',
+                          attempt=self._attempt, name=self._target_name)
             elif now - self._last_seen > cfg.face_grace:
                 self._phase = 'face'
-                self.emit('gesture_cancel', f'{self._target_name} 離開鏡頭，取消手勢驗證', name=self._target_name)
+                self.emit('gesture_cancel', f'{self._target_name} 離開鏡頭，取消手勢驗證', name=self._target_name,
+                          attempt=self._attempt)
             elif left <= 0:
                 self._phase, self._cooldown_until = 'face', now + cfg.retry_cooldown
                 self.emit('gesture_timeout', f'{self._target_name} 手勢逾時（{cfg.gesture_window:.0f} 秒），'
-                          f'{cfg.retry_cooldown:.0f} 秒後可重試', name=self._target_name)
+                          f'{cfg.retry_cooldown:.0f} 秒後可重試', name=self._target_name, attempt=self._attempt)
         return g_name, g_score
 
     # ==========================================

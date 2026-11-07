@@ -46,6 +46,8 @@ class Config:
     face_score: float = 0.6                       # YuNet 偵測信心值，低於此不算一張臉
     required_frames: int = 8                      # 同一人連續通過幾幀才算通過
     rearm_seconds: float = 3.0                    # 人離開鏡頭幾秒後才允許再次自動開鎖
+    report_margin: float = 3.0                    # 回報誤認後，門檻比最像的冒充者再嚴格多少（SFace 距離）
+    report_floor: float = 35.0                    # 門檻最低收到這裡（cosine 0.65）；再低本人也常過不了，應該重拍
 
     # ---- Arduino ----
     arduino_port: Optional[str] = None            # None = 自動尋找
@@ -125,6 +127,14 @@ class Config:
         return self.base / 'face_feats.npz'
 
     @property
+    def impostor_dir(self) -> Path:
+        return self.base / 'impostors'
+
+    @property
+    def thresholds_file(self) -> Path:
+        return self.base / 'thresholds.json'
+
+    @property
     def map_file(self) -> Path:
         return self.base / 'id_map.txt'
 
@@ -150,6 +160,8 @@ class Config:
             base=Path(base) if base else PROJECT_ROOT,
             threshold=float(env.get('FACE_THRESHOLD', 50)),
             face_score=float(env.get('FACE_SCORE', 0.6)),
+            report_margin=float(env.get('FACE_REPORT_MARGIN', 3)),
+            report_floor=float(env.get('FACE_REPORT_FLOOR', 35)),
             arduino_port=env.get('ARDUINO_PORT') or None,
             baud=int(env.get('ARDUINO_BAUD', 9600)),
             cmd_unlock=env.get('CMD_UNLOCK', 'unlock'),

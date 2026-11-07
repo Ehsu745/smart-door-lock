@@ -5,10 +5,14 @@
   - train 不訓練任何東西：把 faces/ 每張照片轉成特徵，存成 face_feats.npz（每張 512 bytes）
   - 辨識：新的臉跟所有已登錄的特徵算 cosine 相似度，取最像的一張
   - 對外的 distance =（1 − cosine）× 100，越小越像，沿用 LBPH 時代「距離 < 門檻算認得」的介面
+  - 回報誤認（learning.py）：
+      個人門檻 thresholds.json —— 只能比預設更嚴，不會更鬆
+      冒充者特徵 impostors/ —— 新的臉比任何成員照片都更像某張冒充者照片時，一律當陌生人
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import shutil
@@ -157,6 +161,44 @@ def set_role(cfg: Config, recognizer, name: str, role: str) -> str:
     return old
 
 
+# ==========================================
+# 個人門檻（thresholds.json）
+# ==========================================
+THRESHOLD_SCALE = 'sface'          # LBPH 版的門檻數字意義不同，沒有這個標記的舊檔一律忽略
+
+
+def read_thresholds(path: Path) -> Dict[str, float]:
+    """{名字: 門檻}。檔案不存在、格式錯、或是 LBPH 版留下的舊檔都回傳空的（= 全部用預設門檻）。"""
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or data.get('scale') != THRESHOLD_SCALE:
+        if path.exists():
+            log.warning('%s 不是 SFace 版的門檻檔，已忽略（全部用預設門檻）', path.name)
+        return {}
+    return {str(k): float(v) for k, v in (data.get('people') or {}).items()}
+
+
+def write_thresholds(path: Path, table: Dict[str, float]) -> None:
+    tmp = path.with_suffix('.tmp')
+    tmp.write_text(json.dumps({'scale': THRESHOLD_SCALE, 'people': dict(sorted(table.items()))},
+                              ensure_ascii=False, indent=1), encoding='utf-8')
+    tmp.replace(path)
+
+
+def load_impostors(cfg: Config, engine) -> Dict[str, np.ndarray]:
+    """impostors/*.jpg → {檔名(不含副檔名): 特徵}。照片很少（每次回報一張），啟動時重算即可。"""
+    out = {}
+    if cfg.impostor_dir.exists():
+        for path in sorted(cfg.impostor_dir.glob('*.jpg')):
+            img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+            vec = engine.embed_photo(img) if img is not None and img.size else None
+            if vec is not None:
+                out[path.stem] = vec
+    return out
+
+
 _retrain_lock = threading.Lock()
 
 
@@ -194,6 +236,10 @@ def delete_member(cfg: Config, recognizer, name: str) -> int:
         train(cfg)
         if isinstance(recognizer, FaceRecognizer):
             recognizer.swap(load_gallery(cfg), read_map(cfg.map_file))
+            recognizer.thresholds.pop(name, None)
+        table = read_thresholds(cfg.thresholds_file)
+        if table.pop(name, None) is not None:              # 之後同名的新成員不沿用舊門檻；冒充者照片保留
+            write_thresholds(cfg.thresholds_file, table)
         log.info('已刪除成員 %s（%d 張照片），特徵已重新登錄', name, len(files))
         return len(files)
 
@@ -209,6 +255,7 @@ class FaceResult:
     person: str                          # id_map 裡的名字；不在名單上是 'Unknown'
     kind: str                            # master / guest / Stranger
     known: bool                          # 距離低於門檻，且身分是 master 或 guest
+    impostor: bool = False               # 比任何成員照片都更像某張回報過的冒充者照片
 
     @property
     def is_master(self) -> bool:
@@ -230,12 +277,41 @@ def load_gallery(cfg: Config) -> Gallery:
 class FaceRecognizer:
     """把「找臉 + 認人」包成一個介面：identify(gray) → [FaceResult]。測試時可以換成假的。"""
 
-    def __init__(self, cfg: Config, gallery: Gallery, mapping, engine=None):
+    def __init__(self, cfg: Config, gallery: Gallery, mapping, engine=None,
+                 thresholds: Optional[Dict[str, float]] = None, impostors: Optional[Dict[str, np.ndarray]] = None):
         self.cfg = cfg
         self.gallery = gallery
         self.mapping = mapping
         self.engine = engine or make_engine(cfg)
+        self.thresholds = dict(thresholds or {})          # 名字 → 收緊後的門檻（回報誤認）
+        self._impostors = dict(impostors or {})           # 檔名 → 特徵
+        self._imp_matrix = self._stack(self._impostors)
         self._lock = threading.Lock()
+
+    @staticmethod
+    def _stack(table):
+        return np.vstack(list(table.values())).astype(np.float32) if table else None
+
+    def threshold_for(self, person: str) -> float:
+        """個人門檻只能比預設嚴（改了 FACE_THRESHOLD 也一樣取較嚴的）。"""
+        return min(self.thresholds.get(person, self.cfg.threshold), self.cfg.threshold)
+
+    def add_impostor(self, key: str, feat: np.ndarray) -> None:
+        with self._lock:
+            table = dict(self._impostors, **{key: feat})
+            self._impostors, self._imp_matrix = table, self._stack(table)
+
+    def remove_impostor(self, key: str) -> bool:
+        with self._lock:
+            if key not in self._impostors:
+                return False
+            table = {k: v for k, v in self._impostors.items() if k != key}
+            self._impostors, self._imp_matrix = table, self._stack(table)
+            return True
+
+    @property
+    def impostor_count(self) -> int:
+        return len(self._impostors)
 
     def swap(self, gallery: Gallery, mapping) -> None:
         """同時換上新特徵與新名單（重新登錄後編號會重排，分開換會有一幀認錯人）。"""
@@ -251,11 +327,15 @@ class FaceRecognizer:
                 raise RuntimeError('faces/ 沒有照片，請先 capture 再 train')
             log.info('找不到 %s，用 faces/ 的照片建立人臉特徵...', cfg.feature_file.name)
             train(cfg, engine)
-        return cls(cfg, load_gallery(cfg), read_map(cfg.map_file), engine)
+        impostors = load_impostors(cfg, engine)
+        if impostors:
+            log.info('已載入 %d 張回報過的冒充者照片', len(impostors))
+        return cls(cfg, load_gallery(cfg), read_map(cfg.map_file), engine,
+                   read_thresholds(cfg.thresholds_file), impostors)
 
     def identify(self, gray) -> List[FaceResult]:
         with self._lock:
-            (feats, labels), mapping = self.gallery, self.mapping
+            (feats, labels), mapping, imp = self.gallery, self.mapping, self._imp_matrix
         bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)      # 登錄照片是灰階，辨識也用灰階，兩邊條件一致
         fh, fw = gray.shape[:2]
         results = []
@@ -264,13 +344,23 @@ class FaceRecognizer:
             w, h = min(int(row[2]), fw - x), min(int(row[3]), fh - y)
             if w < self.cfg.min_face[0] or h <= 0:
                 continue
-            sims = feats @ self.engine.feature(bgr, row)
+            vec = self.engine.feature(bgr, row)
+            sims = feats @ vec
             best = int(np.argmax(sims))
             label, distance = int(labels[best]), (1.0 - float(sims[best])) * 100
             person, kind = mapping.get(label, ('Unknown', 'Stranger'))
-            known = distance < self.cfg.threshold and kind in ROLES
-            results.append(FaceResult((x, y, w, h), label, distance, person, kind, known))
+            # 冒充者：這張臉比最像的成員照片還更像某張回報過的誤認照片 → 不管距離多小都當陌生人
+            impostor = imp is not None and float(np.max(imp @ vec)) > float(sims[best])
+            known = kind in ROLES and not impostor and distance < self.threshold_for(person)
+            results.append(FaceResult((x, y, w, h), label, distance, person, kind, known, impostor))
         return results
+
+
+def face_crop(gray, box):
+    """和 capture 相同的裁法（四周多留 1/4 臉寬），回報誤認時才能用同一套方式算特徵。"""
+    x, y, w, h = box
+    m = w // 4
+    return gray[max(y - m, 0):y + h + m, max(x - m, 0):x + w + m].copy()
 
 
 # ==========================================
