@@ -20,7 +20,14 @@ Pi Camera 3 NoIR ─▶ Raspberry Pi 5 (4GB) ──USB 序列埠──▶ Arduin
 - Arduino：送小寫 `unlock` / `lock` + `\n`，sketch 回 `Unlocked: ...` / `Locked`，8 秒後自動上鎖
 - 接線：UNO D7 → 低電位觸發繼電器 IN；鎖用獨立 12V 電源經繼電器 COM/NO（鎖的種類與 NO/NC 還沒確認），詳見 `docs/03_硬體接線.md`
 
-## 2. 目前狀態（v2.8.0）
+## 2. 目前狀態（v2.9.0）
+
+**v2.9 人臉檢查與分次補拍（2026-11-07）**
+- `capture 名字 [張數]`（1～200，預設 30）；`check-face [秒數]`（5～300，預設 20）：每幀取最大的臉，印距離分布、各門檻通過率、達到連續 `required_frames` 幾次；結論 穩定（中位數 < 40 且開得了）/ 不穩 / 幾乎認不出來。不存照片
+- **名字只看「認得」的幀**：`FaceResult.person` 沒過門檻時仍是最接近的成員，直接拿來建議 `capture` 會把陌生人登錄成那個人（模板污染）；認不出來時只寫「你的名字」
+- 起因：Mac 內建鏡頭量本人（登錄照片是 Pi 5 NoIR 一次連拍的 30 張 162×162 灰階緊裁切、全戴眼鏡）：戴眼鏡中位 46～49、門檻 50 通過 64～79%；不戴 52.7、27%。跟 LFW 最像的陌生人（54）、端對端誤認（52.8）太近 → **不調高門檻**，改成每次換地方架設就跑 check-face、不穩就在 Pi 上 `capture 名字 8` 補拍（相機位置還沒固定、沒有門框，環境多樣反而是優點）
+- Pi 4（自己的，`ssh pi4`，USB webcam 還沒有）：Trixie 64-bit、pytest 全過；identify 126 ms、手勢 117 ms、約 65°C 沒降頻
+
 
 **v2.8 手勢綁定（2026-11-07，本地 Claude Code；參考雲端 session 的 LBPH 版 patch 移植到 SFace 版）**：已進 `main`，`v2.6-sface` / `v2.7-report-sface` 分支已合併
 - `bindings.py`：`GestureBindings`（`gestures.json` 0600、mtime 變了自動重讀、壞檔當沒綁定）；可選 MediaPipe 7 種；`cli.py set-gesture [名字 手勢|none]`
@@ -82,9 +89,9 @@ Pi Camera 3 NoIR ─▶ Raspberry Pi 5 (4GB) ──USB 序列埠──▶ Arduin
 
 ```bash
 source .venv/bin/activate
-python -m pytest -q                 # 151 個測試，不需要相機、Arduino 或人臉模型（conftest 的 FakeFaceEngine）（Mac：147 passed, 4 skipped，序列埠 pty 測試只在 Linux 跑）
+python -m pytest -q                 # 156 個測試，不需要相機、Arduino 或人臉模型（conftest 的 FakeFaceEngine）（Mac：152 passed, 4 skipped，序列埠 pty 測試只在 Linux 跑）
 python app.py run --sim             # 完整系統，用模擬 Arduino
-python app.py records | cleanup | set-pin | set-gesture | test-camera | test-gesture | test-arduino | test-line
+python app.py records | cleanup | set-pin | set-gesture | check-face | test-camera | test-gesture | test-arduino | test-line
 # 只看版面（不用 Pi）：python tools/preview_web.py [port] → http://localhost:8800（手機用區網 IP），自動示範模式，PIN 1234
 # 給手機試的單檔：python tools/build_single_html.py <輸出.html>（不要在 repo 根目錄開 http.server，會把 .git 和 CLAUDE.md 公開到區網）
 ```

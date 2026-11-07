@@ -2,11 +2,12 @@
 
 用法（在專案資料夾，先 source .venv/bin/activate）：
   python app.py                 互動選單
-  python app.py capture yang    採集 yang 的人臉 30 張
+  python app.py capture yang    採集 yang 的人臉 30 張（capture yang 8：只拍 8 張，適合每次換地方補拍）
   python app.py train           以 faces/ 的照片登錄人臉特徵（SFace）
   python app.py run             啟動辨識 + 網頁控制台 + Arduino 控制
   python app.py run --sim       同上，但不接 Arduino，用文字模擬開鎖/上鎖
   python app.py test-camera     只測相機：FPS、人臉偵測、辨識距離，存 camera_test.jpg
+  python app.py check-face      站在鏡頭前 20 秒，統計本人距離與通過率，判斷要不要補拍（check-face 30：量 30 秒）
   python app.py test-arduino    只測試 Arduino：上鎖 → 解鎖 → 等待自動上鎖
   python app.py test-gesture    只測手勢：即時顯示手勢與信心值，存 gesture_test.jpg
   python app.py qr              在終端機印出控制頁網址的 QR code
@@ -215,6 +216,95 @@ def test_camera(cfg: Config, seconds: float = 10):
     log.info('相機正常，%dx%d，最後一張存到 %s', frame.shape[1], frame.shape[0], out)
 
 
+def parse_count(text: str) -> int:
+    """capture 的張數：1～200。"""
+    if not text.isdigit() or not 1 <= int(text) <= 200:
+        raise ValueError(f'張數要是 1～200 的整數，收到 {text!r}')
+    return int(text)
+
+
+def parse_seconds(text: str) -> float:
+    """check-face 的秒數：5～300。"""
+    try:
+        sec = float(text)
+    except ValueError:
+        sec = 0
+    if not 5 <= sec <= 300:
+        raise ValueError(f'秒數要在 5～300 之間，收到 {text!r}')
+    return sec
+
+
+CHECK_GOOD = 40.0     # check-face：距離中位數低於這個值算穩定（距門檻 50 留約 10 的餘裕）
+
+
+def face_check_summary(samples, threshold: float, required: int) -> dict:
+    """check-face 的統計。samples 每幀一筆：(人名, 距離, 是否認得)，沒找到臉是 None。"""
+    seen = [s for s in samples if s is not None]
+    dist = sorted(d for _, d, _ in seen)
+    streak = best = runs = 0
+    for s in samples:
+        streak = streak + 1 if s is not None and s[2] else 0
+        best = max(best, streak)
+        runs += streak == required
+    out = {'frames': len(samples), 'faces': len(seen), 'known': sum(1 for s in seen if s[2]),
+           'longest': best, 'unlock_runs': runs, 'person': None, 'verdict': 'noface'}
+    if not dist:
+        return out
+    pct = lambda q: dist[min(len(dist) - 1, int(q * len(dist)))]
+    names = [n for n, _, k in seen if k]          # 只算認得的幀：沒過門檻時的「最接近成員」不能當成這個人
+    out.update(person=max(set(names), key=names.count) if names else None, min=dist[0], p10=pct(0.1), median=pct(0.5),
+               p90=pct(0.9), max=dist[-1],
+               rate={th: sum(d < th for d in dist) / len(dist) for th in sorted({40, 45, threshold, 55})})
+    out['verdict'] = ('good' if out['median'] < CHECK_GOOD and runs else
+                      'weak' if runs else 'fail')
+    return out
+
+
+def check_face(cfg: Config, seconds: float = 20, camera=None):
+    """站在鏡頭前量 seconds 秒：本人距離分布、通過率、達到連續通過幾次。不存任何照片。"""
+    recognizer = FaceRecognizer.load(cfg)
+    camera = camera or Camera(cfg)
+    reader = FrameReader(camera)
+    log.info('人臉檢查 %.0f 秒：看著鏡頭，慢慢左右轉頭、上下點頭（只有一個人在畫面裡）', seconds)
+    samples, start, last_print = [], time.monotonic(), 0.0
+    try:
+        while time.monotonic() - start < seconds:
+            frame = reader.read()
+            if frame is None:
+                continue
+            results = recognizer.identify(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+            if not results:
+                samples.append(None)
+            else:
+                top = max(results, key=lambda r: r.box[2] * r.box[3])     # 最大的臉 = 站最近的人
+                known = top.is_master or top.is_guest
+                samples.append((top.person if known else 'Unknown', top.distance, known))
+            now = time.monotonic()
+            if now - last_print >= 1 and samples[-1] is not None:
+                last_print = now
+                print(f'  {samples[-1][0]} 距離 {samples[-1][1]:.0f}', flush=True)
+    finally:
+        camera.close()
+    elapsed = max(time.monotonic() - start, 1e-6)
+    s = face_check_summary(samples, cfg.threshold, cfg.required_frames)
+    print(f'\n{s["frames"]} 幀（{s["frames"] / elapsed:.1f} fps），找到臉 {s["faces"]} 幀')
+    if s['verdict'] == 'noface':
+        print('沒找到臉：確認鏡頭對著臉、不要逆光')
+        return s
+    print(f'認成：{s["person"]}' if s['person'] else '沒有被認成任何成員')
+    print(f'距離 最小 {s["min"]:.1f} / p10 {s["p10"]:.1f} / 中位 {s["median"]:.1f} / p90 {s["p90"]:.1f}'
+          f' / 最大 {s["max"]:.1f}（門檻 {cfg.threshold:.0f}，越小越像）')
+    print(f'認得 {s["known"]}/{s["faces"]} 幀；最長連續 {s["longest"]} 幀；'
+          f'達到連續 {cfg.required_frames} 幀 {s["unlock_runs"]} 次')
+    print('  ' + '  '.join(f'門檻 {th:g}: {r * 100:.0f}%' for th, r in s['rate'].items()))
+    name = s['person'] or '你的名字'           # 認不出來時不猜名字，免得把別人的臉補拍進成員相簿
+    print({'good': f'結論：穩定（中位數 < {CHECK_GOOD:.0f}），可以直接用',
+           'weak': f'結論：認得出來但不穩，建議在門口的 Pi 上補拍：python app.py capture {name} 8 → train',
+           'fail': f'結論：幾乎認不出來，在門口的 Pi 上補拍：python app.py capture {name} 8 → train'}[s['verdict']])
+    print('（不要為了通過去調高 FACE_THRESHOLD：陌生人也會跟著變容易通過）')
+    return s
+
+
 def test_gesture(cfg: Config, seconds: float = 20):
     """即時顯示手勢與信心值。有螢幕時開預覽視窗畫出手部骨架（按 q 提早結束）。"""
     gesture = GestureDetector(cfg)
@@ -394,8 +484,10 @@ def main(argv=None) -> int:
             commands['qr'] = show_qr
         if not argv:
             menu(cfg)
-        elif argv[0] == 'capture' and len(argv) == 2:
-            capture(cfg, argv[1])
+        elif argv[0] == 'capture' and len(argv) in (2, 3):
+            capture(cfg, argv[1], parse_count(argv[2]) if len(argv) == 3 else None)
+        elif argv[0] == 'check-face' and len(argv) in (1, 2):
+            check_face(cfg, parse_seconds(argv[1]) if len(argv) == 2 else 20)
         elif argv[0] == 'set-gesture' and len(argv) in (1, 3):
             set_gesture(cfg, *argv[1:])
         elif argv == ['run', '--sim']:

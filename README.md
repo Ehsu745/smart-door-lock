@@ -138,7 +138,7 @@ smartlock/
   qr.py                控制頁 QR code
   web/                 Flask API + 單頁 App（templates/index.html、static/app.js、app.css）
   cli.py               指令列與選單
-tests/                 151 個自動測試，不需要相機或 Arduino
+tests/                 156 個自動測試，不需要相機或 Arduino
 deploy/                systemd 服務與安裝腳本
 arduino/door_lock/     學弟的 Arduino sketch
 ```
