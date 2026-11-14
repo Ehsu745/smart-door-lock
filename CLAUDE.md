@@ -207,10 +207,10 @@ docs/                  01 居家助理未來規劃（概念階段）、02 智慧
 
 ## 6. 環境
 
-- **Pi**：Raspberry Pi OS Trixie 64-bit，hostname `pi`、使用者 `pi`，專案在 `~/door_pi_gesture`，`.venv` 用 uv 建（Python 3.11）
+- **Pi**：Raspberry Pi OS Trixie 64-bit，hostname / 使用者 / IP 見 `CLAUDE.local.md`（不進 git），專案在 `~/door_pi_gesture`，`.venv` 用 uv 建（Python 3.11）
 - **SSH**：Mac `~/.ssh/config` 有 `Host pi`（`raspberrypi.local`、金鑰 `~/.ssh/id_ed25519`），Claude 可直接 `ssh pi` / `rsync … pi:door_pi_gesture/`；要在 Pi 螢幕開視窗：`DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 SHOW_WINDOW=1`，背景跑用 `setsid nohup … > ~/smartlock_run.log`；停止用 `pkill -TERM -f "[a]pp.py run"`（會先上鎖）。**正式模式（會真的開鎖）啟動前先問使用者**
 - Pi 的 `smartlock.env`：`SIM_ARDUINO=1`、LINE token 已設定；成員：`eric` 訪客、`jenny` 主人
-- 網路：目前用 iPhone 熱點（Pi IP 曾是 `192.168.0.50`，會變）；學校 FCU-Auto 是 WPA2-Enterprise，放棄。之後可能改乙太網路 + Pi 開熱點（`nmcli device wifi hotspot`），還在確認場地
+- 網路：目前用 iPhone 熱點（Pi IP 會變）；學校 FCU-Auto 是 WPA2-Enterprise，放棄。之後可能改乙太網路 + Pi 開熱點（`nmcli device wifi hotspot`），還在確認場地
 - 用 SSH 啟動要在 Pi 螢幕顯示視窗：前面加 `DISPLAY=:0`
 - MediaPipe 0.10.18 沒有 Python 3.13 的 ARM wheel → Python 3.9–3.12
 - 相機後端順序：rpicam-vid（YUV420 pipe）→ Picamera2 → USB（`CAMERA_INDEX`）
@@ -221,12 +221,11 @@ docs/                  01 居家助理未來規劃（概念階段）、02 智慧
 
 - **兩個 Claude 共用這個 repo**：本地 Claude Code，和 claude.ai 的雲端 session（透過桌面 App 連結這個資料夾，以 git bundle 傳遞 commit）。對話內容不互通，**交接靠這份 CLAUDE.md 和 `git log`**；開工前先 `git log --oneline --all -10`。同一時間只在一個分支上改，不要兩邊同時改同一個分支
 
-- Repo：`~/GITHUB/smart-door-lock`（使用者所有 git 專案都放在 `~/GITHUB/`）→ GitHub `Ehsu745/smart-door-lock`，**目前是 private**
+- Repo：`~/GITHUB/smart-door-lock`（使用者所有 git 專案都放在 `~/GITHUB/`）→ GitHub `Ehsu745/smart-door-lock`，**2026-11-14 起準備公開**：歷史已改寫清掉 Pi 帳號 / IP、LINE 官方帳號 ID、作者 email（改成 GitHub noreply），私人資訊放 `CLAUDE.local.md`
 - `git log` 從最舊到最新完整保留：PC 測試版（10/14）→ Pi 單檔版 → 手勢單檔版（10/19、10/20）→ v2 模組化（11/03）→ v2.x（11/04）。舊版原始檔在 `~/FCU/CE_2026/AI_smartlock_playground/old_ver/`，不要動
-- 遠端有 `backup/pre-rebuild` 分支（2026-11-04 重建歷史前的 main），確認沒問題後可刪
+- `backup/pre-rebuild`、`v2.6-sface`、`v2.7-report-sface` 分支在公開前刪除（舊歷史含私人資訊；完整備份見 `CLAUDE.local.md`）
 - Mac 上的開發 / 訓練資料夾：`~/FCU/CE_2026/AI_smartlock_playground/smartlock_project`（有 `.venv`、`faces/`、`face.yml`、`records/`），和 repo 分開；改完要同步進 repo 再 commit
 - **資安待辦**：見 `CLAUDE.local.md`（不進 git）
-- **待辦（使用者決定延後）**：公開 repo 前要清掉歷史裡的敏感資訊（README 有 Pi 帳號與 IP `pi@192.168.0.50`），需要改寫歷史 + force push，先問
 
 ## 7. 跟使用者合作的方式
 
