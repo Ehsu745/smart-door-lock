@@ -4,6 +4,27 @@
 
 ---
 
+## 0.0 交接：2026-11-14～15 本地 session 做到一半的事（新 session 先看這裡）
+
+**兩份本機 repo，注意現在在哪一份**
+- `~/GITHUB/smart-door-lock`：**舊歷史**（含私人資訊），GitHub 上的舊 repo 也是這份。之後要改名成 `smart-door-lock-old`
+- `~/GITHUB/smart-door-lock-public`：**改寫過歷史的乾淨版本**（`git filter-repo` 清掉 Pi 帳號 / IP、LINE 官方帳號 ID、本名、HackMD 那段、作者 gmail → GitHub noreply），只有 `main`、`face-accuracy`，pytest 179 passed / 4 skipped。**之後在這份開發**；沒有 remote
+- 改寫前完整備份：`~/GITHUB/smart-door-lock-before-public-20261114.bundle`（含私人資訊，不要上傳）
+- LINE token 從來沒進過 git（掃過全部歷史）
+- 舊 repo 的 `.gitignore` 沒擋 `CLAUDE.local.md` → 在舊 repo **不要 `git add .`**
+
+**待辦（照順序）**
+1. **GitHub 公開**：使用者自己在網頁刪掉 `Ehsu745/smart-door-lock`（gh token 沒有 `delete_repo` 權限，`gh auth refresh` 在 Claude Code 裡會逾時）→ Claude：`gh repo create Ehsu745/smart-door-lock --private --description "人臉 + 手勢雙重驗證智慧門鎖（Raspberry Pi 5 + Arduino）"` → 在 public 那份 `git remote add origin` 推 `main`、`face-accuracy` → 再掃一次私人字串（清單見 `CLAUDE.local.md`）→ `gh repo edit --visibility public --accept-visibility-change-consequences` → 兩個資料夾改名（舊的 → `-old`，public → `smart-door-lock`）→ `git config user.email 39007338+Ehsu745@users.noreply.github.com`
+2. **Pi 4 忘記密碼**：SSH 金鑰能登入（`ssh pi4`），但 `sudo` 要密碼 → 加 Wi-Fi、關機都做不到。重設：SD 卡 `cmdline.txt` 行尾加 ` init=/bin/sh` → 開機 `mount -o remount,rw /` → `passwd 使用者` → `sync` → 拿掉 init 再開機
+3. **Pi 4 加 Wi-Fi**（SSID / 密碼見 `CLAUDE.local.md`）：`nmcli connection add type wifi …` 需要 sudo 或在 Pi 桌面本機執行；只加設定、不要切換現在的連線（會斷 SSH）
+4. `~/.ssh/config` 的 `Host pi4` 是寫死 IP，換網路會連不到 → 建議改成 mDNS 名稱（見 `CLAUDE.local.md`），先問使用者
+5. Pi 4 關機：`systemctl poweroff` 也要 sudo，使用者自己從桌面關
+
+**已完成**
+- 準確度改善（§0.1 模型比較 `tools/bench_face_models.py`、§0.2 可靠度規劃）移到 `face-accuracy` 分支，main 只留指標；跑 `report` 前要 `git switch face-accuracy`（或用 worktree）
+- Pi 4 同步到 **v2.10.0**（rsync `smartlock/ app.py tests/ tools/ requirements*.txt`，資料不動）：pytest **183 passed**（含 Linux 才跑的序列埠測試）；`test-audio` → 找不到音效卡（還沒接）；Pi 4 也還沒接 USB 鏡頭。成員只有 `me`（master）
+- 刪了本機 `v2.8-gesture-tmp`（已合進 main，bundle 裡有）
+
 ## 0. 下一步規劃（2026-11-07～11-14 與 claude.ai 雲端 session 討論的結論，給本地 Claude Code）
 
 以下是使用者和雲端 session 討論後的結論，**還沒實作**。開工前先跟使用者確認要做哪一項；每項做完照 §7 的流程（本地開發 → 測試 → 單檔 HTML 給手機試（有改 UI 時）→ 進 main），並把該項移到「§2 目前狀態」。
