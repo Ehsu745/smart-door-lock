@@ -8,57 +8,9 @@
 
 以下是使用者和雲端 session 討論後的結論，**還沒實作**。開工前先跟使用者確認要做哪一項；每項做完照 §7 的流程（本地開發 → 測試 → 單檔 HTML 給手機試（有改 UI 時）→ 進 main），並把該項移到「§2 目前狀態」。
 
-### 0.1 辨識模型比較：SFace vs ArcFace（使用者想先做）
+### 0.1 / 0.2 提高準確度與可靠度 → 在 `face-accuracy` 分支
 
-> **2026-11-14 進度（暫緩，使用者改先做 0.3）**：已在 Mac 開發資料夾 `~/FCU/CE_2026/AI_smartlock_playground/smartlock_project` 準備好（onnxruntime 1.32、`models/insightface/buffalo_s|l`、`~/lfw_funneled` 5,760 人），在那個資料夾跑 `python ~/GITHUB/smart-door-lock/tools/bench_face_models.py …`（腳本用 cwd 找 models/、faces/）。`speed`（Mac 單執行緒 ms）：SFace 5.28、mbf 3.66、r50 38.9；`extract` 完成（9,674 張，`bench_out/feats_*.npz` 在開發資料夾）；**`report` 還沒跑**。相簿只有 `me` 30 張（灰階），門鎖情境看 `*_gray`
-
-**起因**：朋友建議 InsightFace 架構（SCRFD-500M → ArcFace MobileFaceNet `w600k_mbf` → numpy；他投影片上的 2d106det 是會議中偵測說話者用的，使用者說可忽略；LanceDB 在幾百個向量的規模用不上，numpy 就夠）。這跟現在的 YuNet → SFace → numpy 是**同一個架構換零件**，值不值得換要用數據決定。
-
-**已確認**
-- 偵測器換 SCRFD 沒有意義：單執行緒 320×240 SCRFD-500M 4.4 ms、YuNet 4.1 ms；門口近距離正臉兩者都夠；SCRFD 還要 onnxruntime ＋ 自寫輸出解碼。**要換也只換辨識模型，保留 YuNet**（YuNet 的 5 點可直接對齊 ArcFace，`tools/bench_face_models.py` 就是這樣接）
-- 特徵擷取速度（雲端 x86，單執行緒，只算 embedding）：SFace 9.4 ms、ArcFace mbf 14.5 ms、ArcFace r50 259 ms → **r50 在 Pi 上每張 0.5 秒以上，排除**；只考慮 mbf
-- **授權**：InsightFace 程式碼 MIT，但**預訓練權重（buffalo_s / buffalo_l，含 SCRFD、ArcFace）限非商業研究用途**。畢業專題可以，報告裡要註明
-
-**要做的**
-1. 照 `tools/bench_face_models.py` 檔頭準備：`onnxruntime`、InsightFace 權重放 `models/insightface/`、**LFW 在 Mac 上下載**（`curl -L -o ~/lfw-funneled.tgz https://ndownloader.figshare.com/files/5976015`，約 230 MB；雲端 session 的網路連不到，使用者 11/07 還沒下載）
-2. `speed` → `extract ~/lfw_funneled`（每人最多 6 張，約 1 萬張）→ `report`，輸出 `bench_out/report.json`（已 gitignore）
-3. 比較重點：
-   - LFW 本人配對 vs 陌生人配對：TAR @ FAR = 1e-3 / 1e-4 / 1e-5、EER
-   - 門鎖情境（`faces/` 30 張當相簿、LFW 每人第一張當陌生人）：本人最差距離 vs 最像的陌生人距離，**兩者的差距（安全邊際）**才是重點
-   - **color vs gray**：門鎖目前全程灰階（舊照片是灰階 Haar 裁切），順便回答「SFace 吃灰階損失多少」這個從 v2.6 就沒驗證的問題
-4. **判斷規則**：ArcFace mbf 的安全邊際明顯大於 SFace（例如 TAR@1e-4 高好幾個百分點、或門鎖情境邊際大很多）才換；差不多就留 SFace，把力氣放在 0.2 的活體偵測
-5. 如果要換（另外問使用者）：只改 `face.py` 的特徵擷取；距離尺度會變 → `FACE_THRESHOLD`、`FACE_REPORT_FLOOR` / `MARGIN` 要依報告重定，`thresholds.json` 的 `scale` 標記改成新值（舊檔自動忽略的機制已經有）；`face_feats.npz` 和 `impostors/` 特徵會從照片自動重建，**不用重拍**；`check-face` 的「穩定」標準（中位數 < 40）也要跟著改
-6. 報告寫法：0 次誤認寫 rule of three 上限（3 / N），不要寫 0%
-
-### 0.2 提高可靠度（依投入少、效果大排序）
-
-使用者朋友批評「CV 做門禁不可靠」，雲端 session 的評估：**純 2D 影像的人臉辨識確實防不了照片 / 螢幕翻拍**（目前拿 eric 照片 + 自己的手比對的手勢就可能通過；v2.8 綁定手勢讓攻擊者還要知道手勢，但人臉這關仍會被騙），但解法是**加感測、不是放棄 CV**。
-
-**第一優先（便宜、效果最大）**
-| 項目 | 做法 | 備註 |
-|---|---|---|
-| 控制器裝在門內 | 門外只留鏡頭；Pi、Arduino、繼電器、電源在門內 | 0 元。最大的實體漏洞是「拆面板短路繼電器」，不是人臉 |
-| 門磁感應器 | 磁簧開關接 Arduino 輸入腳，序列埠回報門的開關狀態 → 事件 `door_opened` / `door_forced`（沒開鎖門卻開了）/ `door_left_open` → LINE | 約 50 元；要學弟改 sketch，協定要加一行狀態回報（先跟使用者確認格式） |
-| 連續失敗鎖定 | 人臉通過但手勢錯 N 次 → 暫停自動開鎖幾分鐘 + LINE | 用訂閱事件做（`gesture_wrong`），不要塞進 `door.py`；N 和時間先問使用者 |
-| 用實測資料定門檻 | v2.7 的 `attempts` 表已經存本人每次的距離；累積後算門口真實的 FRR，再檢討 50 / 35 / 3 | 可以做成 `records` 指令的統計或設定頁一張卡 |
-
-**第二優先：活體偵測（防照片 / 螢幕）**——先做不用買東西的，用攻擊測試的數據決定要不要買硬體
-| 項目 | 做法 | 能擋 / 限制 |
-|---|---|---|
-| 軟體防偽模型 | Silent-Face-Anti-Spoofing（MiniFASNet，ONNX，小，Pi 跑得動），接在人臉通過之前 | 擋印刷照片和多數螢幕翻拍；換光線 / 相機會掉準確度。**授權先確認** |
-| 眨眼偵測 | MediaPipe Face Mesh（已經裝了 MediaPipe）或 InsightFace 2d106det 算眼睛開合比例（EAR），人臉通過前要看到一次眨眼 | 擋照片；擋不住影片重播 |
-| 測距（ToF） | VL53L5CX（8×8 多點，約 500～800 元，I2C 接 Pi）：① 有人進 1.5 m 才跑辨識（= 規劃第 5 項，省 CPU / 降溫）② 只接受 0.4～1 m 內的辨識 ③ 距離 vs 臉的像素寬做尺寸一致性（手機螢幕上的臉太小）④ 臉的區域是不是平面 | 戶外陽光會干擾；要和相機視野校正對位；擋不住立體面具 |
-| 雙鏡頭 IR | Pi 5 有兩個 CSI：一般相機認人，NoIR ＋ 850nm 濾光片 ＋ IR 補光燈判斷真假（螢幕不發紅外線） | 約 500～1,500 元；**只有 NoIR 不加濾光片沒用**（它也看得到可見光） |
-
-**驗證方式（報告與履歷都用得上）**：做攻擊測試集——印出的照片、手機螢幕、平板播影片，每種 20～50 次，記錄被騙過幾次（ISO/IEC 30107-3 的 APCER 概念）；加上門口實測 FRR。每加一道防線前後各跑一輪。
-
-**第三優先（系統不出事）**
-- 確認鎖的種類：fail-secure（斷電鎖住）或 fail-safe（斷電打開，逃生門通常要求）；**一定要有實體鑰匙備援**
-- Pi 用 UPS 模組、鎖的 12V 加電池；SD 卡改 USB SSD 或 overlayfs 唯讀根目錄
-- systemd `WatchdogSec` + 硬體看門狗；相機無畫面 / Arduino 無回應 → LINE
-- HTTPS（Tailscale）+ PIN 改 6 位：目前 PIN 在 Wi-Fi 上是明文
-
-**報告措辭（建議）**：寫清楚限制比聲稱很安全有說服力——「隨機陌生人單幀誤認率上限約 0.054%（LFW 5,524 人）；目前不防照片攻擊，下一步以 ToF / 紅外線做活體偵測；控制器裝在門內」。
+SFace vs ArcFace 辨識模型比較（`tools/bench_face_models.py`）、活體偵測、門磁、連續失敗鎖定等規劃，**跟本體分開放在 `face-accuracy` 分支**（2026-11-14 使用者要求）。要做這部分先 `git switch face-accuracy`，詳細規劃在該分支的 CLAUDE.md §0.1、§0.2；做完、驗證過再合進 main。
 
 ### 0.3 對講機（學弟實驗室教授指定的設備）
 
