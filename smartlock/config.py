@@ -106,10 +106,19 @@ class Config:
     line_notify: bool = True                      # 有 token 時是否發通知（0 = 只顯示額度）
     line_cooldown: float = 300.0                  # 同一位訪客 / 開鎖失敗，幾秒內只通知一次
 
+    # ---- 對講機 ----
+    intercom: str = 'auto'                        # auto（有 USB 音效卡就啟用）| 1 | 0 | sim（Mac 開發用測試音）
+    audio_device: str = ''                        # 例如 plughw:2,0；空白 = 自動找 USB 音效卡
+    intercom_channel: str = 'left'                # 預錄語音從哪個聲道播：left（門外）| right（室內）| both
+
     # ---- 路徑 ----
     @property
     def gestures_file(self) -> Path:
         return self.base / 'gestures.json'
+
+    @property
+    def sounds_dir(self) -> Path:
+        return self.base / 'sounds'
 
     @property
     def pin_file(self) -> Path:
@@ -206,4 +215,7 @@ class Config:
             line_user_id=env.get('LINE_USER_ID', ''),
             line_notify=env.get('LINE_NOTIFY', '1') != '0',
             line_cooldown=float(env.get('LINE_COOLDOWN', 300)),
+            intercom=env.get('INTERCOM', 'auto'),
+            audio_device=env.get('AUDIO_DEVICE', ''),
+            intercom_channel=env.get('INTERCOM_CHANNEL', 'left'),
         )

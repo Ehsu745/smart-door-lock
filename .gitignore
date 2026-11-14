@@ -44,3 +44,7 @@ pin.tmp
 
 # 產生的檔案
 dist/
+bench_out/
+
+# 對講機語音（可能是自己的聲音）
+sounds/

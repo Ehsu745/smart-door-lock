@@ -9,6 +9,7 @@
   /api/attempts/<id>/crop.jpg、/api/attempts/<id>/report|undo、/api/users/<name>/threshold/reset（後三者每次都要 PIN）
   /api/events、/api/records、/records/<id>/play|snapshot.jpg|download、DELETE /api/records/<id>
   /api/settings
+  /api/intercom、/audio_feed（門口聲音，raw PCM）、/api/intercom/play（預錄語音；需登入或附 PIN）
 
 有 PIN 時：開鎖、看紀錄、看成員、看設定都要先登入（輸入一次 PIN，這支手機在本次啟動期間都有效）。
 PIN 連續錯 5 次鎖 60 秒；改 PIN 後所有手機都要重新輸入。
@@ -134,7 +135,7 @@ class _StaticPin:
         return hmac.compare_digest(str(pin or ''), self.pin)
 
 
-def create_web(system, storage=None, line=None, notifier=None, hardening=None):
+def create_web(system, storage=None, line=None, notifier=None, hardening=None, intercom=None):
     from flask import (Flask, Response, abort, jsonify, redirect, request, send_file, send_from_directory, session)
 
     cfg = system.cfg
@@ -152,6 +153,10 @@ def create_web(system, storage=None, line=None, notifier=None, hardening=None):
     app.pin_guard = guard
     streams = StreamRegistry()
     app.streams = streams
+    audio_streams = StreamRegistry()                              # 聲音和影像各自計算，規則相同
+    app.audio_streams = audio_streams
+    if intercom is not None:
+        system.providers['intercom'] = lambda: {k: v for k, v in intercom.status().items() if k != 'listeners'}
     started = time.time()
 
     # ==========================================
@@ -286,6 +291,60 @@ def create_web(system, storage=None, line=None, notifier=None, hardening=None):
         return Response(frames(), mimetype='multipart/x-mixed-replace; boundary=frame',
                         headers={'Cache-Control': 'no-store'})
 
+    # ==========================================
+    # 對講機
+    # ==========================================
+    def need_intercom():
+        need_login()
+        if intercom is None:
+            abort(404)
+
+    @app.route('/api/intercom')
+    def intercom_info():
+        need_intercom()
+        return jsonify(success=True, clips=intercom.clips(), **intercom.status())
+
+    @app.route('/audio_feed')
+    def audio_feed():
+        """門口聲音：單聲道 16-bit little-endian PCM，取樣率在 X-Sample-Rate。前端用 Web Audio 播。"""
+        need_intercom()
+        if not intercom.can_listen:
+            abort(404)
+        from ..intercom import RATE
+        sid = audio_streams.open(request.remote_addr)
+        q = intercom.subscribe(request.remote_addr)
+
+        def chunks():
+            from queue import Empty
+            try:
+                while not system.stop.is_set() and audio_streams.active(sid):
+                    try:
+                        data = q.get(timeout=1)
+                    except Empty:
+                        continue
+                    if data is None:
+                        break
+                    yield data
+            finally:
+                intercom.unsubscribe(q)
+                audio_streams.close(sid)
+        return Response(chunks(), mimetype='application/octet-stream',
+                        headers={'Cache-Control': 'no-store', 'X-Sample-Rate': str(RATE), 'X-Accel-Buffering': 'no'})
+
+    @app.route('/api/intercom/play', methods=['POST'])
+    def intercom_play():
+        data = request.get_json(silent=True) or {}
+        if not logged_in():
+            if not data.get('pin'):
+                abort(401)
+            if not pin_ok(data.get('pin')):
+                return deny()
+            login_session()
+        if intercom is None:
+            abort(404)
+        ok, msg = intercom.play(str(data.get('clip') or ''), request.remote_addr)
+        return jsonify(success=ok, message=msg), (200 if ok else 409)
+
     @app.route('/api/health')
     def health():
         """排查用：串流數、執行緒數、開啟的檔案數。網站卡住時先看這裡。"""
@@ -295,6 +354,7 @@ def create_web(system, storage=None, line=None, notifier=None, hardening=None):
         except OSError:
             pass
         return jsonify(ok=True, uptime=round(time.time() - started), streams=streams.count(),
+                       audio_streams=audio_streams.count(),
                        threads=threading.active_count(), open_files=fds)
 
     # ==========================================
@@ -579,6 +639,8 @@ def create_web(system, storage=None, line=None, notifier=None, hardening=None):
                     if cfg.require_gesture else '只需人臉',
                     'unlock_seconds': cfg.unlock_seconds, 'version': __version__},
             security={'pin_required': store.required, 'source': getattr(store, 'source', 'env')},
+            intercom={'device': intercom.name, 'channel': intercom.channel, 'clips': len(intercom.clips())}
+            if intercom is not None else None,
         )
 
     return app

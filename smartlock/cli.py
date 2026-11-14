@@ -16,6 +16,7 @@
   python app.py set-pin         設定或重設網頁 PIN（忘記 PIN 時用）
   python app.py set-gesture 名字 手勢   綁定開鎖手勢（手勢填 none 取消；不加參數列出目前設定）
   python app.py test-line       查 LINE 額度，確認後送一則測試訊息
+  python app.py test-audio      對講機：找 USB 音效卡、錄 5 秒、左右聲道各播一次、看有沒有欠壓
 
 設定會自動從專案資料夾的 smartlock.env 讀取；指令前面加的環境變數優先。
 （也可以用 python -m smartlock <指令>）
@@ -40,6 +41,7 @@ from .door import DoorSystem
 from .events import EventBus
 from .face import FaceRecognizer, capture, make_engine, train
 from .gesture import GestureDetector, draw_hand
+from .intercom import make_intercom
 from .bindings import GESTURES, GestureBindings
 from .learning import AttemptLog, Hardening
 from .config import PROJECT_ROOT
@@ -130,7 +132,8 @@ def run(cfg: Config):
     if line is not None and cfg.line_notify:
         notifier = LineNotifier(line, system.bus, user_id=cfg.line_user_id, cooldown=cfg.line_cooldown)
         log.info('LINE 通知：%s（訪客、陌生人錄影、開鎖失敗）', '只推給 LINE_USER_ID' if cfg.line_user_id else '廣播給所有好友')
-    web = create_web(system, storage, line, notifier, hardening)
+    intercom = make_intercom(cfg, system.bus)
+    web = create_web(system, storage, line, notifier, hardening, intercom)
     threading.Thread(target=serve_web, args=(web, cfg.web_port, system.stop), daemon=True, name='web').start()
 
     url = control_url(cfg)
@@ -419,6 +422,44 @@ def test_line(cfg: Config):
     print('已送出，請看 LINE。')
 
 
+def test_audio(cfg: Config, seconds: int = 5):
+    """對講機硬體檢查（Pi 上）：錄音 → 左聲道（門外）播 → 右聲道（室內）播。"""
+    import subprocess
+    import tempfile
+    import wave
+
+    import numpy as np
+
+    from .intercom import detect_devices, to_stereo
+
+    rec, play = (cfg.audio_device, cfg.audio_device) if cfg.audio_device else detect_devices()
+    print(f'收音裝置：{rec or "找不到"}\n播放裝置：{play or "找不到"}')
+    if not rec or not play:
+        raise RuntimeError('找不到 USB 音效卡：arecord -l / aplay -l 看看有沒有「USB PnP Audio Device」，'
+                           '或在 smartlock.env 設 AUDIO_DEVICE=plughw:卡號,0')
+    with tempfile.TemporaryDirectory() as tmp:
+        path = f'{tmp}/test.wav'
+        input(f'按 Enter 後對著麥克風講話 {seconds} 秒…')
+        subprocess.run(['arecord', '-q', '-D', rec, '-f', 'S16_LE', '-r', '16000', '-c', '1', '-d', str(seconds), path],
+                       check=True)
+        with wave.open(path, 'rb') as w:
+            mono = np.frombuffer(w.readframes(w.getnframes()), '<i2')
+        rms = float(np.sqrt(np.mean(mono.astype(np.float64) ** 2))) if len(mono) else 0.0
+        peak = int(np.abs(mono.astype(np.int32)).max()) if len(mono) else 0
+        print(f'錄到 {len(mono) / 16000:.1f} 秒；音量 RMS {rms:.0f}、峰值 {peak} / 32767'
+              + ('（太小：alsamixer 按 F6 選 USB 卡，F4 調麥克風增益）' if peak < 1000 else '')
+              + ('（破音：增益調低）' if peak >= 32000 else ''))
+        for ch, where in (('left', '左聲道（門外）'), ('right', '右聲道（室內）')):
+            input(f'按 Enter 從{where}播放…')
+            subprocess.run(['aplay', '-q', '-D', play, '-f', 'S16_LE', '-r', '16000', '-c', '2', '-t', 'raw'],
+                           input=to_stereo(mono, ch), check=True)
+    try:
+        out = subprocess.run(['vcgencmd', 'get_throttled'], capture_output=True, text=True, timeout=5).stdout.strip()
+        print(f'{out}' + ('' if out.endswith('=0x0') else '　← 不是 0x0：曾經欠壓或降頻，喇叭可能太大聲或電源不足'))
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def set_gesture(cfg: Config, name=None, gesture=None):
     """綁定開鎖手勢。不加參數列出每個人目前的設定。"""
     from .face import read_map
@@ -479,7 +520,8 @@ def main(argv=None) -> int:
         cfg = Config.from_env()
         commands = {'train': train, 'run': run, 'test-arduino': test_arduino,
                     'test-camera': test_camera, 'test-gesture': test_gesture,
-                    'records': show_records, 'cleanup': cleanup, 'set-pin': set_pin, 'test-line': test_line}
+                    'records': show_records, 'cleanup': cleanup, 'set-pin': set_pin, 'test-line': test_line,
+                    'test-audio': test_audio}
         if cfg.enable_qr:
             commands['qr'] = show_qr
         if not argv:

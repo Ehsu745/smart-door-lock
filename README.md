@@ -116,6 +116,25 @@ bash deploy/install_service.sh --desktop # 登入桌面後在 Pi 螢幕顯示視
 - 額度剩 20 則以下只發「訪客」和「開鎖失敗」；用完就暫停。通知只有文字，**不放開鎖連結**。
 - 在背景執行緒發送，LINE 連不上不影響門鎖；失敗原因會顯示在手機「設定」的 LINE 區塊。
 
+## 對講機（聽門口、預錄回覆）
+
+硬體：Waveshare「USB TO AUDIO」免驅動音效卡（內建 2 顆麥克風，Pi 上顯示為「USB PnP Audio Device」）＋兩顆喇叭。
+**左聲道（`VOLP/VOLN`）接門外喇叭、右聲道（`VORP/VORN`）接室內**；BTL 輸出的 N 不是地線，不能接 GND、兩聲道負端不能並在一起。
+
+1. 插上音效卡，`python app.py test-audio`：自動找卡 → 錄 5 秒 → 左、右聲道各播一次 → 印音量與 `vcgencmd get_throttled`（不是 `0x0` = 欠壓）
+   - 聲音太小：`alsamixer` → F6 選 USB 卡 → F4 調麥克風增益
+   - 找不到卡或「Device or resource busy」：`arecord -l` 看卡號，在 `smartlock.env` 設 `AUDIO_DEVICE=plughw:卡號,0`（被 PipeWire 占用時改 `AUDIO_DEVICE=default`）
+2. 預錄語音：在 Mac 上 `python tools/make_sounds.py` 產生三段預設語音（macOS 中文語音「美佳」），再 `rsync -av sounds/ pi:door_pi_gesture/sounds/`。
+   **檔名就是按鈕上的字**，開頭的編號用來排序（`01 請稍候，馬上來.wav`）；格式 16-bit PCM WAV、最長 30 秒；想用自己的聲音就錄好用同名檔蓋掉，不用重新啟動
+3. 啟動門鎖後，手機門鎖頁的影像右下角會出現「聆聽」「回覆」（沒有音效卡就不顯示）
+
+- **聆聽**：有人在聽才開麥克風，最後一支手機停止就關掉；同一支手機只留一條、最多 4 條、10 分鐘換新（跟影像串流同一套規則）；手機落後超過 1 秒會丟掉舊的聲音，延遲維持在約 0.3 秒。離開門鎖頁、切到背景就停止
+- **回覆**：從門外喇叭（左聲道，`INTERCOM_CHANNEL` 可改）播放，同一時間只播一段
+- 兩者都要登入（PIN）；時間軸會記「手機開始聆聽門口」（同一支手機 15 分鐘內只記一次）和「門口播放：…」
+- iPhone 靜音開關打開時，Safari 16.4 以上仍會出聲（`navigator.audioSession`）；更舊的版本要關掉靜音開關
+- 只用 HTTP 就能做；手機對門口講話要用麥克風，瀏覽器規定要 HTTPS，之後再做
+- Mac 開發：`INTERCOM=sim python app.py run --sim`（麥克風改成每 2 秒一聲嗶，回覆用 afplay 播）
+
 ## 程式結構
 
 ```
@@ -131,6 +150,7 @@ smartlock/
   face.py              人臉偵測（YuNet）、辨識（SFace）、採集、登錄、個人門檻與冒充者比對
   learning.py          回報誤認：嘗試紀錄、收緊門檻、冒充者、取消回報
   bindings.py          每個主人綁定的開鎖手勢（gestures.json，檔案改動自動重新讀取）
+  intercom.py          對講機：手機聽門口（arecord → raw PCM 串流）、播放預錄語音（aplay，分聲道）
   gesture.py           MediaPipe 手勢（含備援規則）
   arduino.py           序列埠協定（+ 模擬 Arduino）
   camera.py            rpicam / Picamera2 / USB 相機
@@ -138,7 +158,7 @@ smartlock/
   qr.py                控制頁 QR code
   web/                 Flask API + 單頁 App（templates/index.html、static/app.js、app.css）
   cli.py               指令列與選單
-tests/                 156 個自動測試，不需要相機或 Arduino
+tests/                 183 個自動測試，不需要相機或 Arduino
 deploy/                systemd 服務與安裝腳本
 arduino/door_lock/     學弟的 Arduino sketch
 ```
@@ -154,4 +174,5 @@ arduino/door_lock/     學弟的 Arduino sketch
 - **新 API**：成員與頭像、設定、時間軸附錄影資訊（已刪除的錄影會標示）、LINE 額度快取與 token 錯誤。
 - **回報誤認**：冒充者只擋長得像的那個人、本人照常、個人門檻只會變嚴、LBPH 舊門檻檔被忽略、嘗試紀錄與結果、人臉圖過期、端對端回報 → 再來開不了門 → 重啟仍有效 → 取消回報恢復、每次都要 PIN、門檻下限與擋到本人的警告、恢復預設、刪除成員一起清掉。
 - **開鎖手勢**：只有綁定的手勢能開、沒綁定沿用預設、7 種都能綁、輪流試會被抓、比 YA 時短暫被認成食指朝上不算錯、低信心不算錯、狀態 / 事件 / 開鎖那一幀都不洩漏、檔案熱更新與壞檔、網頁 API 每次要 PIN、刪除成員一起刪、set-gesture 指令、手勢比錯記成可回報的嘗試。
+- **對講機**：找 USB 音效卡、語音檔標籤與排序、立體聲轉單聲道、只播左 / 右聲道、多人共用一個麥克風、沒人聽就關麥克風、慢的手機丟最舊的資料、重連不重複記事件、同時只播一段、檔名不能跑出 sounds/、網頁 API 要登入 / PIN、串流格式。
 - **其他**：設定讀取（含 smartlock.env）、手勢規則、QR code 可解碼、登錄保留 guest 分類、舊資料自動建立特徵。

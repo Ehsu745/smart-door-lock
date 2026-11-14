@@ -4,6 +4,90 @@
 
 ---
 
+## 0. 下一步規劃（2026-11-07～11-14 與 claude.ai 雲端 session 討論的結論，給本地 Claude Code）
+
+以下是使用者和雲端 session 討論後的結論，**還沒實作**。開工前先跟使用者確認要做哪一項；每項做完照 §7 的流程（本地開發 → 測試 → 單檔 HTML 給手機試（有改 UI 時）→ 進 main），並把該項移到「§2 目前狀態」。
+
+### 0.1 辨識模型比較：SFace vs ArcFace（使用者想先做）
+
+> **2026-11-14 進度（暫緩，使用者改先做 0.3）**：已在 Mac 開發資料夾 `~/FCU/CE_2026/AI_smartlock_playground/smartlock_project` 準備好（onnxruntime 1.32、`models/insightface/buffalo_s|l`、`~/lfw_funneled` 5,760 人），在那個資料夾跑 `python ~/GITHUB/smart-door-lock/tools/bench_face_models.py …`（腳本用 cwd 找 models/、faces/）。`speed`（Mac 單執行緒 ms）：SFace 5.28、mbf 3.66、r50 38.9；`extract` 完成（9,674 張，`bench_out/feats_*.npz` 在開發資料夾）；**`report` 還沒跑**。相簿只有 `me` 30 張（灰階），門鎖情境看 `*_gray`
+
+**起因**：朋友建議 InsightFace 架構（SCRFD-500M → ArcFace MobileFaceNet `w600k_mbf` → numpy；他投影片上的 2d106det 是會議中偵測說話者用的，使用者說可忽略；LanceDB 在幾百個向量的規模用不上，numpy 就夠）。這跟現在的 YuNet → SFace → numpy 是**同一個架構換零件**，值不值得換要用數據決定。
+
+**已確認**
+- 偵測器換 SCRFD 沒有意義：單執行緒 320×240 SCRFD-500M 4.4 ms、YuNet 4.1 ms；門口近距離正臉兩者都夠；SCRFD 還要 onnxruntime ＋ 自寫輸出解碼。**要換也只換辨識模型，保留 YuNet**（YuNet 的 5 點可直接對齊 ArcFace，`tools/bench_face_models.py` 就是這樣接）
+- 特徵擷取速度（雲端 x86，單執行緒，只算 embedding）：SFace 9.4 ms、ArcFace mbf 14.5 ms、ArcFace r50 259 ms → **r50 在 Pi 上每張 0.5 秒以上，排除**；只考慮 mbf
+- **授權**：InsightFace 程式碼 MIT，但**預訓練權重（buffalo_s / buffalo_l，含 SCRFD、ArcFace）限非商業研究用途**。畢業專題可以，報告裡要註明
+
+**要做的**
+1. 照 `tools/bench_face_models.py` 檔頭準備：`onnxruntime`、InsightFace 權重放 `models/insightface/`、**LFW 在 Mac 上下載**（`curl -L -o ~/lfw-funneled.tgz https://ndownloader.figshare.com/files/5976015`，約 230 MB；雲端 session 的網路連不到，使用者 11/07 還沒下載）
+2. `speed` → `extract ~/lfw_funneled`（每人最多 6 張，約 1 萬張）→ `report`，輸出 `bench_out/report.json`（已 gitignore）
+3. 比較重點：
+   - LFW 本人配對 vs 陌生人配對：TAR @ FAR = 1e-3 / 1e-4 / 1e-5、EER
+   - 門鎖情境（`faces/` 30 張當相簿、LFW 每人第一張當陌生人）：本人最差距離 vs 最像的陌生人距離，**兩者的差距（安全邊際）**才是重點
+   - **color vs gray**：門鎖目前全程灰階（舊照片是灰階 Haar 裁切），順便回答「SFace 吃灰階損失多少」這個從 v2.6 就沒驗證的問題
+4. **判斷規則**：ArcFace mbf 的安全邊際明顯大於 SFace（例如 TAR@1e-4 高好幾個百分點、或門鎖情境邊際大很多）才換；差不多就留 SFace，把力氣放在 0.2 的活體偵測
+5. 如果要換（另外問使用者）：只改 `face.py` 的特徵擷取；距離尺度會變 → `FACE_THRESHOLD`、`FACE_REPORT_FLOOR` / `MARGIN` 要依報告重定，`thresholds.json` 的 `scale` 標記改成新值（舊檔自動忽略的機制已經有）；`face_feats.npz` 和 `impostors/` 特徵會從照片自動重建，**不用重拍**；`check-face` 的「穩定」標準（中位數 < 40）也要跟著改
+6. 報告寫法：0 次誤認寫 rule of three 上限（3 / N），不要寫 0%
+
+### 0.2 提高可靠度（依投入少、效果大排序）
+
+使用者朋友批評「CV 做門禁不可靠」，雲端 session 的評估：**純 2D 影像的人臉辨識確實防不了照片 / 螢幕翻拍**（目前拿 eric 照片 + 自己的手比對的手勢就可能通過；v2.8 綁定手勢讓攻擊者還要知道手勢，但人臉這關仍會被騙），但解法是**加感測、不是放棄 CV**。
+
+**第一優先（便宜、效果最大）**
+| 項目 | 做法 | 備註 |
+|---|---|---|
+| 控制器裝在門內 | 門外只留鏡頭；Pi、Arduino、繼電器、電源在門內 | 0 元。最大的實體漏洞是「拆面板短路繼電器」，不是人臉 |
+| 門磁感應器 | 磁簧開關接 Arduino 輸入腳，序列埠回報門的開關狀態 → 事件 `door_opened` / `door_forced`（沒開鎖門卻開了）/ `door_left_open` → LINE | 約 50 元；要學弟改 sketch，協定要加一行狀態回報（先跟使用者確認格式） |
+| 連續失敗鎖定 | 人臉通過但手勢錯 N 次 → 暫停自動開鎖幾分鐘 + LINE | 用訂閱事件做（`gesture_wrong`），不要塞進 `door.py`；N 和時間先問使用者 |
+| 用實測資料定門檻 | v2.7 的 `attempts` 表已經存本人每次的距離；累積後算門口真實的 FRR，再檢討 50 / 35 / 3 | 可以做成 `records` 指令的統計或設定頁一張卡 |
+
+**第二優先：活體偵測（防照片 / 螢幕）**——先做不用買東西的，用攻擊測試的數據決定要不要買硬體
+| 項目 | 做法 | 能擋 / 限制 |
+|---|---|---|
+| 軟體防偽模型 | Silent-Face-Anti-Spoofing（MiniFASNet，ONNX，小，Pi 跑得動），接在人臉通過之前 | 擋印刷照片和多數螢幕翻拍；換光線 / 相機會掉準確度。**授權先確認** |
+| 眨眼偵測 | MediaPipe Face Mesh（已經裝了 MediaPipe）或 InsightFace 2d106det 算眼睛開合比例（EAR），人臉通過前要看到一次眨眼 | 擋照片；擋不住影片重播 |
+| 測距（ToF） | VL53L5CX（8×8 多點，約 500～800 元，I2C 接 Pi）：① 有人進 1.5 m 才跑辨識（= 規劃第 5 項，省 CPU / 降溫）② 只接受 0.4～1 m 內的辨識 ③ 距離 vs 臉的像素寬做尺寸一致性（手機螢幕上的臉太小）④ 臉的區域是不是平面 | 戶外陽光會干擾；要和相機視野校正對位；擋不住立體面具 |
+| 雙鏡頭 IR | Pi 5 有兩個 CSI：一般相機認人，NoIR ＋ 850nm 濾光片 ＋ IR 補光燈判斷真假（螢幕不發紅外線） | 約 500～1,500 元；**只有 NoIR 不加濾光片沒用**（它也看得到可見光） |
+
+**驗證方式（報告與履歷都用得上）**：做攻擊測試集——印出的照片、手機螢幕、平板播影片，每種 20～50 次，記錄被騙過幾次（ISO/IEC 30107-3 的 APCER 概念）；加上門口實測 FRR。每加一道防線前後各跑一輪。
+
+**第三優先（系統不出事）**
+- 確認鎖的種類：fail-secure（斷電鎖住）或 fail-safe（斷電打開，逃生門通常要求）；**一定要有實體鑰匙備援**
+- Pi 用 UPS 模組、鎖的 12V 加電池；SD 卡改 USB SSD 或 overlayfs 唯讀根目錄
+- systemd `WatchdogSec` + 硬體看門狗；相機無畫面 / Arduino 無回應 → LINE
+- HTTPS（Tailscale）+ PIN 改 6 位：目前 PIN 在 Wi-Fi 上是明文
+
+**報告措辭（建議）**：寫清楚限制比聲稱很安全有說服力——「隨機陌生人單幀誤認率上限約 0.054%（LFW 5,524 人）；目前不防照片攻擊，下一步以 ToF / 紅外線做活體偵測；控制器裝在門內」。
+
+### 0.3 對講機（學弟實驗室教授指定的設備）
+
+- **設備**：Waveshare「USB TO AUDIO」免驅動 USB 音效卡（內建 2 顆麥克風、不支援外接麥克風；立體聲 BTL 輸出每聲道約 2.6 W @ 4 Ω；Pi 上顯示為「USB PnP Audio Device」）＋兩顆箱體喇叭（雙單體小音箱，**品牌型號與阻抗還沒確認**，看背面標示是 4 Ω 還是 8 Ω；8 Ω 也能用、音量較小）。說明文件：https://www.waveshare.com/wiki/USB_TO_AUDIO
+- **接線**：排針 `VOLP/VOLN` 左聲道、`VORP/VORN` 右聲道，一顆喇叭各接一組；**BTL 的 N 不是地線，不能接 GND、兩聲道負端不能並在一起**
+- **兩顆喇叭的用法**：左聲道門外（對訪客說話）、右聲道室內（門鈴聲 / 提示），同一張卡分聲道播放
+- **回音**：麥克風和喇叭靠很近 → 先做**半雙工（按住說話，講話時麥克風靜音）**；全雙工之後再用 PipeWire 的 echo-cancel 模組
+- **分階段**（手機用麥克風一定要 HTTPS，所以先做不需要的）：
+  1. ✅ **聽門口聲音**（v2.10，見 §2）
+  2. ✅ **預錄語音回覆**（v2.10，見 §2）
+  3. **門鈴**：按鈕接 Arduino 或 Pi GPIO → 事件 `doorbell` → LINE 通知 + 室內喇叭響（通知不放開鎖連結）
+  4. **手機對門口講話**：需要 HTTPS（Tailscale + ProxyFix），等 HTTPS 做了再說
+- **Pi 上的驗證**（還沒做；v2.10 起可直接 `python app.py test-audio`，下面是手動版）：
+  ```bash
+  arecord -l && aplay -l                                   # 找 USB PnP 的卡號，下面假設 2
+  arecord -D plughw:2,0 -f S16_LE -r 16000 -c 2 -d 5 test.wav && aplay -D plughw:2,0 test.wav
+  alsamixer                                                # F6 選 USB 卡，調麥克風增益
+  vcgencmd get_throttled                                   # 喇叭最大聲時不是 0x0 = 欠壓
+  ```
+  確認門口 1 m 外講話是否清楚、最大音量時有沒有欠壓
+- 音效卡和喇叭都不防水，內建麥克風會收風聲 → 裝在有遮蔽的地方
+
+### 0.4 雜項
+
+- `~/FCU/CE_2026/AI_smartlock_playground/bench_input.tgz`（雲端 session 傳模型與 `faces/` 用的暫存檔，含人臉照片）和 `ref_cloud_gesture_binding/` 都可以刪，刪之前問使用者
+- `.gitignore` 已加 `bench_out/`
+
+---
+
 ## 1. 專案是什麼
 
 逢甲通訊系學弟的畢業專題：**人臉 + 手勢雙重驗證的智慧門鎖**。使用者（學長）負責軟體與整合，學弟負責 Arduino 與硬體。
@@ -20,7 +104,20 @@ Pi Camera 3 NoIR ─▶ Raspberry Pi 5 (4GB) ──USB 序列埠──▶ Arduin
 - Arduino：送小寫 `unlock` / `lock` + `\n`，sketch 回 `Unlocked: ...` / `Locked`，8 秒後自動上鎖
 - 接線：UNO D7 → 低電位觸發繼電器 IN；鎖用獨立 12V 電源經繼電器 COM/NO（鎖的種類與 NO/NC 還沒確認），詳見 `docs/03_硬體接線.md`
 
-## 2. 目前狀態（v2.9.0）
+## 2. 目前狀態（v2.10.0）
+
+**v2.10 對講機階段 1、2（2026-11-14，本地 Claude Code）**：手機聽門口、播放預錄語音。**還沒進 main、還沒上 Pi、還沒接音效卡實測**
+- `intercom.py`：用系統 `arecord` / `aplay`（alsa-utils，不加 Python 套件）。自動找 `arecord -l` 裡名稱含 USB（優先 PnP）的卡 → `plughw:N,0`；`AUDIO_DEVICE` 可指定（被 PipeWire 占用時用 `default`）。`INTERCOM=auto|1|0|sim`，沒有卡 → `make_intercom` 回傳 None，網頁不顯示按鈕
+- 收音：mono 16 kHz S16LE，0.1 秒一塊；**有人聽才開 arecord、最後一人離開就關**（`_mic_busy` 鎖確保同時只有一個 arecord）；每個聽眾一個佇列（3 秒），滿了丟最舊的
+- 播放：`sounds/*.wav`（16-bit PCM、≤ 30 秒，gitignore），檔名 = 按鈕文字、開頭編號排序；單聲道轉立體聲只放 `INTERCOM_CHANNEL`（預設 left = 門外）；同時只播一段；clip id 不能含 `/`、`\`、開頭 `.`
+- 網頁：`GET /api/intercom`（登入）、`GET /audio_feed`（登入；raw PCM、`X-Sample-Rate`；另一個 `StreamRegistry`，規則同影像）、`POST /api/intercom/play`（登入或附 PIN，同 `/api/action`；忙碌 409）；`/api/status.intercom` = `{listen, reply, playing}`（不給聽眾數）；設定頁「系統」多一列對講機
+- 事件：`intercom_listen`（同 IP 15 分鐘內只記一次，串流 10 分鐘重連不重複記）、`intercom_reply`；時間軸灰點（`talk`）
+- 前端：影像右下角疊「聆聽 / 回覆」（不改 `fitDoor` 的高度分配；矮螢幕 compact 只留圖示）；聆聽 = fetch ReadableStream → Web Audio，緩衝 0.25 秒、超前 1 秒就丟（實測延遲約 0.3 秒）；`AudioContext` 在按鈕 click 裡建立 / resume（iOS 規定），停止時不關 context（PIN 之後重開不是 user gesture）；`navigator.audioSession.type = 'playback'` 讓 iPhone 靜音開關打開也有聲音（Safari 16.4+）；離開門鎖頁 / 背景 / pagehide 就停
+- 順便修：PIN 鍵盤的 Enter 沒 `preventDefault`，桌機焦點還在原按鈕時會再按一次那個按鈕（聆聽會無限跳 PIN）
+- `test-audio`：找卡 → 錄 5 秒印 RMS / 峰值 → 左、右聲道各播 → `vcgencmd get_throttled`；`tools/make_sounds.py`：Mac `say -v Meijia` + `afconvert` 產生三段預設語音
+- 測試 156 → 183（`tests/test_intercom.py`，假麥克風 / 假喇叭）；Playwright Chromium + WebKit、375×548 / 390×664：PIN → 聆聽（AudioContext running、音量條動）→ 回覆（播放中標示、播完解除）→ 停止 / 換頁後 `/api/health` 的 `audio_streams` 歸零；示範模式也有對講（沒有聲音）。使用者 2026-11-14 用手機連 Mac 上的模擬伺服器（真 Flask + `SimMic` 嗶聲 + `SimSpeaker` afplay）實測：手機聽得到嗶聲、回覆從 Mac 喇叭播出
+- **待驗證（Pi）**：PipeWire 會不會占住 plughw、USB 卡的 1 聲道錄音、門口 1 m 收音、喇叭最大聲時欠壓、iPhone / LINE 內建瀏覽器的 fetch 串流與 Web Audio
+
 
 **v2.9 人臉檢查與分次補拍（2026-11-07）**
 - `capture 名字 [張數]`（1～200，預設 30）；`check-face [秒數]`（5～300，預設 20）：每幀取最大的臉，印距離分布、各門檻通過率、達到連續 `required_frames` 幾次；結論 穩定（中位數 < 40 且開得了）/ 不穩 / 幾乎認不出來。不存照片
@@ -89,9 +186,10 @@ Pi Camera 3 NoIR ─▶ Raspberry Pi 5 (4GB) ──USB 序列埠──▶ Arduin
 
 ```bash
 source .venv/bin/activate
-python -m pytest -q                 # 156 個測試，不需要相機、Arduino 或人臉模型（conftest 的 FakeFaceEngine）（Mac：152 passed, 4 skipped，序列埠 pty 測試只在 Linux 跑）
+python -m pytest -q                 # 183 個測試，不需要相機、Arduino 或人臉模型（conftest 的 FakeFaceEngine）（Mac：179 passed, 4 skipped，序列埠 pty 測試只在 Linux 跑）
 python app.py run --sim             # 完整系統，用模擬 Arduino
-python app.py records | cleanup | set-pin | set-gesture | check-face | test-camera | test-gesture | test-arduino | test-line
+python app.py records | cleanup | set-pin | set-gesture | check-face | test-camera | test-gesture | test-arduino | test-line | test-audio
+# Mac 測對講：INTERCOM=sim python app.py run --sim；預設語音：python tools/make_sounds.py
 # 只看版面（不用 Pi）：python tools/preview_web.py [port] → http://localhost:8800（手機用區網 IP），自動示範模式，PIN 1234
 # 給手機試的單檔：python tools/build_single_html.py <輸出.html>（不要在 repo 根目錄開 http.server，會把 .git 和 CLAUDE.md 公開到區網）
 ```
@@ -110,6 +208,7 @@ smartlock/
   face.py              FaceEngine（YuNet+SFace，測試換成假的：make_engine）、辨識、capture、train（登錄特徵）、set_role、個人門檻、冒充者比對
   learning.py          回報誤認：AttemptLog、Hardening（report / undo / reset）
   bindings.py          GestureBindings：每個主人綁定的開鎖手勢（gestures.json）
+  intercom.py          對講機：聽門口（arecord → raw PCM）、預錄語音（aplay，分聲道）、make_intercom
   gesture.py / arduino.py / camera.py / display.py / qr.py
   sentinel.py          哨兵：預錄緩衝、固定幀率取樣（迴圈慢時補幀）、背景寫檔 MJPG .avi
   storage.py           SQLite（records / events / presence / attempts）+ 容量管理（天數 / 總量 / SD 剩餘）
@@ -207,6 +306,6 @@ docs/                  01 居家助理未來規劃（概念階段）、02 智慧
 
 ## 9. 隱私與機密
 
-- 不要 commit：`faces/`、`face.yml`、`face_feats.npz`、`id_map.txt`、`gestures.json`、`models/`、`impostors/`、`thresholds.json`、`records/`、`pin.json`、`smartlock.env`（都在 `.gitignore`）；`.gitignore` 另外擋掉任何位置的 `*.db*`、`*.sqlite*`、`*.avi`、`*.mp4`、`*.task`、`*.env`（`*.env.example` 除外）
+- 不要 commit：`sounds/`（可能是自己的聲音）、`faces/`、`face.yml`、`face_feats.npz`、`id_map.txt`、`gestures.json`、`models/`、`impostors/`、`thresholds.json`、`records/`、`pin.json`、`smartlock.env`（都在 `.gitignore`）；`.gitignore` 另外擋掉任何位置的 `*.db*`、`*.sqlite*`、`*.avi`、`*.mp4`、`*.task`、`*.env`（`*.env.example` 除外）
 - 紀錄頁、成員頁、設定頁都需要 PIN（含人臉影像）
 - 大型語言模型或任何自動化**不能自己開鎖**（居家助理規劃的原則）

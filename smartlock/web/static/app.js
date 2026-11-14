@@ -47,12 +47,16 @@ const Real = {
   report: (id, pin) => post(`/api/attempts/${id}/report`, { pin }),
   undoReport: (id, pin) => post(`/api/attempts/${id}/undo`, { pin }),
   resetThreshold: (name, pin) => post(`/api/users/${encodeURIComponent(name)}/threshold/reset`, { pin }),
+  intercom: () => http('/api/intercom'),
+  playClip: (clip, pin) => post('/api/intercom/play', { clip, pin }),
 };
 
 const Demo = (() => {
   const now = () => Date.now() / 1000;
   const t0 = now(), day = 86400;
-  const st = { auto: true, unlockedUntil: 0, gestureUntil: t0 + 10, pin: '1234', loggedIn: false, pinVersion: 0 };
+  const st = { auto: true, unlockedUntil: 0, gestureUntil: t0 + 10, pin: '1234', loggedIn: false, pinVersion: 0, playing: null, playUntil: 0 };
+  const demoClips = [{ id: '01 請稍候，馬上來', label: '請稍候，馬上來' }, { id: '02 包裹請放門口，謝謝', label: '包裹請放門口，謝謝' },
+    { id: '03 現在不方便，請稍後再來', label: '現在不方便，請稍後再來' }];
   let nextId = 100;
   const ev = (dt, kind, text, extra = {}) => ({ id: nextId--, time: t0 - dt, kind, text, data: {}, ...extra });
   const events = [
@@ -93,6 +97,7 @@ const Demo = (() => {
         unlocked: left > 0, unlock_left: left, unlock_seconds: 8, auto: st.auto, require_gesture: true,
         connected: true, arduino: '模擬模式（未接 Arduino）', pin_required: !!st.pin,
         sentinel: { state: stranger && p > 30 ? 'recording' : stranger ? 'watching' : 'idle', seconds: Math.round(p - 30) },
+        intercom: { listen: true, reply: true, playing: now() < st.playUntil ? st.playing : null },
       };
     },
     async login(pin) {
@@ -129,9 +134,23 @@ const Demo = (() => {
         storage: { count: 23, used_mb: 312, limit_mb: 2048, keep_days: 7, disk_free_mb: 18640, disk_total_mb: 29000 },
         sentinel: { enabled: true, trigger: 5, stop: 5, max: 60, cooldown: 300 },
         system: { arduino: '模擬模式（未接 Arduino）', connected: true, camera: 'Pi 相機（rpicam）', gesture: 'MediaPipe Gesture Recognizer',
-          rule: '人臉＋各自綁定的手勢（未綁定：讚(Thumb_Up) / YA(Victory)）', unlock_seconds: 8, version: '2.8.0（示範）' },
+          rule: '人臉＋各自綁定的手勢（未綁定：讚(Thumb_Up) / YA(Victory)）', unlock_seconds: 8, version: '2.10.0（示範）' },
+        intercom: { device: 'plughw:2,0（示範）', channel: 'left', clips: demoClips.length },
         security: { pin_required: !!st.pin, source: 'file' },
       };
+    },
+    async intercom() { need(); return { ok: true, listen: true, reply: true, playing: now() < st.playUntil ? st.playing : null, clips: demoClips }; },
+    async playClip(id, pin) {
+      if (!authed()) {
+        if (!pin) throw new AuthError('需要輸入 PIN');
+        if (pin !== st.pin) return { ok: false, status: 403, message: 'PIN 錯誤' };
+        st.loggedIn = true;
+      }
+      if (now() < st.playUntil) return { ok: false, status: 409, message: `正在播放「${st.playing}」` };
+      const c = demoClips.find((x) => x.id === id);
+      st.playing = c.label; st.playUntil = now() + 2.5;
+      push('intercom_reply', `門口播放：${c.label}（示範）`);
+      return { ok: true, message: `正在門口播放「${c.label}」` };
     },
     async setRole(name, role, pin) {
       need();
@@ -208,6 +227,7 @@ function go(i, animate = true) {
   $('tabInd').style.transform = `translateX(${page * 100}%)`;
   tabs.forEach((t, k) => t.setAttribute('aria-selected', String(k === page)));
   setLive(page === 0 && !document.hidden);           // 離開門鎖頁就停止影像串流，省 Pi 的 CPU 和網路
+  if (page !== 0) listenStop();                      // 聲音也一樣
   if (loaders[page]) loaders[page]();
   if (page === 2) $('histDot').hidden = true;
   history.replaceState(null, '', '#' + PAGES[page]);
@@ -318,6 +338,7 @@ function renderDoor(d) {
   const t = $('autoToggle');
   if (t.getAttribute('aria-checked') !== String(d.auto)) t.setAttribute('aria-checked', String(d.auto));
   setText('autoSub', d.auto ? (d.require_gesture ? '人臉＋手勢' : '只需人臉') : '已關閉，只能用手機開');
+  renderIntercom(d.intercom);
   $('conn').classList.toggle('off', !d.connected);
   setText('connText', d.connected ? (DEMO ? 'Arduino 模擬' : 'Arduino 已連線') : 'Arduino 未連線');
 }
@@ -433,7 +454,133 @@ function reconnectLive(delay = 2000) {
 $('live').addEventListener('error', () => reconnectLive());
 setInterval(() => { if (!DEMO && page === 0 && !document.hidden && Date.now() - liveSince > 9 * 60000) reconnectLive(0); }, 30000);
 // 分頁被切走、關閉或放進背景時，一定要放掉串流，不然會一直佔著瀏覽器的連線名額
-window.addEventListener('pagehide', () => setLive(false));
+window.addEventListener('pagehide', () => { setLive(false); listenStop(); });
+
+/* =========================================================
+   對講機：聽門口（raw PCM 串流 → Web Audio）、預錄回覆
+   ========================================================= */
+function renderIntercom(ic) {
+  show('camTools', !!ic && (ic.listen || ic.reply));
+  show('listenBtn', !!ic && ic.listen);
+  show('replyBtn', !!ic && ic.reply);
+  if (ic && !ic.listen && Listen.on) listenStop();
+  // 回覆清單開著時：播放中那一段標「播放中」，其他先停用
+  document.querySelectorAll('#sheetBody .reply').forEach((b) => {
+    const on = !!(ic && ic.playing) && b.dataset.label === ic.playing;
+    b.classList.toggle('on', on);
+    b.disabled = !!(ic && ic.playing);
+    const tag = on ? '播放中' : '';
+    if (b.querySelector('small').textContent !== tag) b.querySelector('small').textContent = tag;
+  });
+}
+
+const Listen = { on: false, ctx: null, ctrl: null, next: 0, demo: 0 };
+function paintListen() {
+  const b = $('listenBtn');
+  b.setAttribute('aria-pressed', String(Listen.on));
+  b.setAttribute('aria-label', Listen.on ? '停止聆聽門口' : '聆聽門口聲音');
+  b.querySelector('.lbl').textContent = Listen.on ? '聆聽中' : '聆聽';
+  if (!Listen.on) paintLevel(0);
+}
+function paintLevel(v) {
+  const bars = $('lvl').children, k = [0.6, 1, 0.75];
+  for (let i = 0; i < 3; i++) bars[i].style.height = `${Math.round(3 + 9 * Math.min(1, v * k[i]))}px`;
+}
+function listenStart() {
+  Listen.on = true; paintListen();
+  if (DEMO) {
+    toast('示範模式沒有聲音');
+    clearInterval(Listen.demo);
+    Listen.demo = setInterval(() => paintLevel(Math.random() * 0.6), 120);
+    return;
+  }
+  try {
+    // iPhone：Web Audio 預設跟著靜音開關；設成 playback 才和影片一樣有聲音（Safari 16.4+）
+    if (navigator.audioSession) navigator.audioSession.type = 'playback';
+    Listen.ctx = Listen.ctx || new (window.AudioContext || window.webkitAudioContext)();
+    Listen.ctx.resume();                 // 一定要在按鈕的 click 裡呼叫，iOS 才允許出聲
+  } catch (e) { toast('這個瀏覽器不能播放聲音'); listenStop(); return; }
+  listenConnect();
+}
+function listenStop() {
+  if (!Listen.on) return;
+  Listen.on = false;
+  clearInterval(Listen.demo);
+  if (Listen.ctrl) Listen.ctrl.abort();             // 中斷 fetch = 伺服器那邊放掉麥克風
+  Listen.ctrl = null;
+  paintListen();
+}
+async function listenConnect() {
+  const ctrl = Listen.ctrl = new AbortController();
+  let r;
+  try { r = await fetch('/audio_feed?t=' + Date.now(), { cache: 'no-store', signal: ctrl.signal }); } catch (e) { listenRetry(ctrl); return; }
+  if (ctrl !== Listen.ctrl) return;
+  if (r.status === 401) {
+    listenStop();
+    askPin({ title: '輸入 PIN 以聆聽門口', submit: (pin) => Api.login(pin), done: listenStart });
+    return;
+  }
+  if (!r.ok || !r.body) { toast(r.status === 404 ? '門口沒有接麥克風' : '連不到門口的聲音'); listenStop(); return; }
+  const rate = +r.headers.get('X-Sample-Rate') || 16000, reader = r.body.getReader();
+  let carry = null;
+  Listen.next = 0;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done || ctrl !== Listen.ctrl) break;
+      let bytes = value;
+      if (carry) { const b = new Uint8Array(carry.length + bytes.length); b.set(carry); b.set(bytes, carry.length); bytes = b; carry = null; }
+      if (bytes.length % 2) { carry = bytes.slice(-1); bytes = bytes.subarray(0, bytes.length - 1); }
+      if (bytes.length) playPcm(bytes, rate);
+    }
+  } catch (e) {}
+  listenRetry(ctrl);                                    // 伺服器 10 分鐘換一條、Wi-Fi 閃斷：自動重連
+}
+function listenRetry(ctrl) {
+  setTimeout(() => { if (Listen.on && ctrl === Listen.ctrl) listenConnect(); }, 1500);
+}
+function playPcm(bytes, rate) {
+  const ctx = Listen.ctx, n = bytes.length / 2, dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.length);
+  const buf = ctx.createBuffer(1, n, rate), ch = buf.getChannelData(0);
+  let sum = 0;
+  for (let i = 0; i < n; i++) { const v = dv.getInt16(i * 2, true) / 32768; ch[i] = v; sum += v * v; }
+  paintLevel(Math.sqrt(sum / n) * 8);
+  const now = ctx.currentTime;
+  if (Listen.next > now + 1) return;                    // 累積超過 1 秒（手機卡過）：丟掉，延遲不會越來越大
+  if (Listen.next < now + 0.05) Listen.next = now + 0.25;   // 斷流後重新開始：先緩衝 0.25 秒
+  const src = ctx.createBufferSource();
+  src.buffer = buf; src.connect(ctx.destination); src.start(Listen.next);
+  Listen.next += n / rate;
+}
+$('listenBtn').addEventListener('click', () => (Listen.on ? listenStop() : listenStart()));
+
+async function replySheet() {
+  let r;
+  try { r = await Api.intercom(); } catch (e) {
+    if (e instanceof AuthError) askPin({ title: '輸入 PIN 以使用對講', submit: (pin) => Api.login(pin), done: replySheet });
+    else toast('連不到門鎖');
+    return;
+  }
+  const clips = r.clips || [];
+  openSheet(`<h3>預錄回覆</h3><p class="sheet-sub">從門外喇叭播放，按一下就播</p>
+    ${clips.length ? `<div class="replies">${clips.map((c) => `<button class="reply" data-id="${esc(c.id)}" data-label="${esc(c.label)}">
+        <span>${esc(c.label)}</span><small></small></button>`).join('')}</div>`
+      : `<div class="infobox">還沒有語音。把 16-bit WAV 放到 Pi 專案資料夾的 <code>sounds/</code>，檔名就是按鈕上的字
+         （開頭的編號用來排序，例如 <code>01 請稍候.wav</code>），不用重新啟動。</div>`}`);
+  document.querySelectorAll('#sheetBody .reply').forEach((b) => b.addEventListener('click', () => playReply(b.dataset.id)));
+  renderIntercom({ ...(last.status && last.status.intercom), playing: r.playing });
+}
+async function playReply(id) {
+  let r;
+  try { r = await Api.playClip(id); } catch (e) {
+    if (e instanceof AuthError) askPin({ title: '輸入 PIN 以播放回覆', submit: (pin) => Api.playClip(id, pin), done: (res) => toast(res.message) });
+    else toast('連不到門鎖');
+    return;
+  }
+  toast(r.message || (r.ok ? '播放中' : '播放失敗'));
+  poll();
+}
+$('replyBtn').addEventListener('click', replySheet);
 
 /* =========================================================
    需要登入的頁面
@@ -822,7 +969,8 @@ const FILTERS = [['全部', null], ['開鎖', ['unlock', 'lock', 'door_failed']]
 const HIDE_IN_ALL = ['face_passed', 'stranger_detected', 'gesture_cancel', 'info'];   // 重複或太細的事件
 const KIND_CLASS = { unlock: 'unlock', lock: 'lock', guest_detected: 'guest', sentinel_saved: 'sentinel',
   door_failed: 'alert', pin_rejected: 'alert', gesture_timeout: 'alert', pin_changed: 'lock', role_changed: 'lock', member_deleted: 'alert',
-  impostor_reported: 'alert', impostor_undone: 'lock', threshold_reset: 'lock', gesture_wrong: 'alert', gesture_changed: 'lock' };
+  impostor_reported: 'alert', impostor_undone: 'lock', threshold_reset: 'lock', gesture_wrong: 'alert', gesture_changed: 'lock',
+  intercom_reply: 'talk', intercom_listen: 'talk' };
 let filter = 0, events = [], lastEventId = null, tlMore = false;
 
 function dayLabel(t) {
@@ -1011,6 +1159,8 @@ function renderSettings(refresh = false) {
         <div class="row"><span>手勢辨識</span><span class="v">${esc(sy.gesture || '—')}</span></div>
         <div class="row"><span>開門條件</span><span class="v">${esc(sy.rule)}</span></div>
         <div class="row"><span>開鎖後自動上鎖</span><span class="v">${sy.unlock_seconds} 秒</span></div>
+        <div class="row"><span>對講機</span><span class="v ${s.intercom ? '' : 'bad'}">${s.intercom
+          ? `${esc(s.intercom.device)}・語音 ${s.intercom.clips} 段` : '沒有接 USB 音效卡'}</span></div>
         <div class="row"><span>版本</span><span class="v">${esc(sy.version)}</span></div></div>
       <div class="sec"><h3>安全</h3>
         <div class="row"><span>網頁 PIN</span>${pinState}</div>
@@ -1140,6 +1290,8 @@ document.addEventListener('keydown', (e) => {
   if (/^[0-9]$/.test(e.key)) pinKey(e.key);
   else if (e.key === 'Backspace') pinKey('del');
   else if (e.key === 'Enter') pinSubmit();
+  else return;
+  e.preventDefault();                                   // 焦點還在原本的按鈕上：Enter 不要再按一次那個按鈕
 });
 
 let toastTimer;
@@ -1175,5 +1327,5 @@ async function poll() {
   go(start, false);
   poll();
   setInterval(() => { if (!document.hidden) poll(); }, 1000);
-  document.addEventListener('visibilitychange', () => setLive(!document.hidden && page === 0));
+  document.addEventListener('visibilitychange', () => { setLive(!document.hidden && page === 0); if (document.hidden) listenStop(); });
 })();

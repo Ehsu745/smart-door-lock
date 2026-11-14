@@ -11,7 +11,8 @@
   door      DoorSystem 狀態機（face → gesture → unlock）
   display   預覽視窗、門口顯示畫面
   qr        控制頁網址與 QR code
+  intercom  對講機：手機聽門口、播放預錄語音（arecord / aplay）
   web       Flask 控制頁
   cli       指令列入口（capture / train / run / test-*）
 """
-__version__ = '2.9.0'
+__version__ = '2.10.0'
