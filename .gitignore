@@ -48,3 +48,6 @@ bench_out/
 
 # 對講機語音（可能是自己的聲音）
 sounds/
+
+# 私人交接資訊（Pi 帳號、LINE ID 等）
+CLAUDE.local.md
