@@ -1,0 +1,28 @@
+# Obsidian: per-session state and plugin code (reinstall from the app)
+.obsidian/workspace*.json
+.obsidian/cache
+.obsidian/plugins/*/main.js
+!.obsidian/plugins/hover-fit/main.js
+.obsidian/plugins/*/styles.css
+.obsidian/plugins/*/node_modules/
+.trash/
+.idea/
+desktop.ini
+Thumbs.db
+__pycache__/
+*.pyc
+
+# Make.md cache (rebuilt by the plugin)
+.makemd/
+
+# Make.md state
+.space/context.mdb
+**/.space/context.mdb
+.obsidian/plugins/make-md/data.json
+
+# Themes are installed from Obsidian (or Tools/setup/install_plugins.py)
+.obsidian/themes/
+
+# Journal day / week notes stay on this machine: smart-door-lock is a public repo
+Journal/*
+!Journal/Journal.md

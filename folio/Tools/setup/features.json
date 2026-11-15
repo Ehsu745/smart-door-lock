@@ -1,0 +1,108 @@
+{
+  "_comment": "Folio's features. Tools/setup/folio.py reads this to build a new vault (new) or change one (add / remove). paths: files or folders copied with the feature (a folder means every tracked file under it); skills: LLM/skills/<name> plus its stubs in each agent folder, and its row in the AGENTS.md command table; plugins / snippets / core_plugins: Obsidian settings switched with the feature; config: keys of LLM/vault_config.json that only this feature uses; requires: features added with it. template_only: never copied into a vault.",
+  "template_only": [
+    "README.md",
+    "README.zh-TW.md",
+    "docs",
+    "LLM/skills/cmd-new-vault",
+    ".claude/skills/cmd-new-vault",
+    ".agents/skills/cmd-new-vault"
+  ],
+  "features": {
+    "core": {
+      "title": "Core",
+      "always": true,
+      "about": "Status list, current work, topic notes, day rollover, git rules, the Obsidian look",
+      "paths": [
+        ".gitattributes", ".gitignore", "LICENSE", "licenses",
+        "AGENTS.md", "CLAUDE.md", "Home.md",
+        "LLM/LLM.md", "LLM/LLM_GUIDE.md", "LLM/DEV_STATUS.md", "LLM/vault_config.json",
+        "Quest/Quest.md", "Notes/Notes.md",
+        "_Meta/_Meta.md", "_Meta/Checkbox Style.md", "_Meta/Theme Color Preview.md",
+        "Tools/Tools.md", "Tools/setup", "Tools/status", "Tools/rollover",
+        ".obsidian/app.json", ".obsidian/appearance.json", ".obsidian/backlink.json",
+        ".obsidian/community-plugins.json", ".obsidian/core-plugins.json",
+        ".obsidian/page-preview.json", ".obsidian/types.json",
+        ".space/waypoints.json"
+      ],
+      "skills": {
+        "cmd-sync": ["/cmd-sync", "Update Today / Yesterday / Ongoing in `DEV_STATUS.md` from the chat"],
+        "cmd-rollover": ["/cmd-rollover", "Today → Yesterday (and the journal day note when the vault has one), commit"],
+        "cmd-features": ["/cmd-features", "List, add or remove this vault's features"],
+        "git-workflow": ["(branch, commit, merge, MR)", "Git and merge-request rules for the project repos"]
+      },
+      "plugins": ["obsidian-minimal-settings", "obsidian-style-settings", "breadcrumbs", "dataview",
+                  "tab-panels", "obsidian-hover-editor", "make-md", "hover-fit"],
+      "snippets": ["term-cards", "general-layout", "tab-panels-vertical", "popping-and-locking"]
+    },
+    "test-queue": {
+      "title": "Test queue",
+      "about": "One test checklist per branch, ticked as results come in; for work tested by hand or on hardware",
+      "paths": ["Quest/Test Queue.md", "Quest/Test Queue Archive.md"],
+      "skills": {
+        "test-queue": ["(test groups, test results)", "`Quest/Test Queue.md` rules"]
+      }
+    },
+    "plan": {
+      "title": "Phases",
+      "about": "A phase plan; /cmd-phase records a phase that passed on its target (phone, board, staging) before the next starts",
+      "paths": ["Quest/Plan.md"],
+      "skills": {
+        "cmd-phase": ["/cmd-phase [phase]", "A phase of `Quest/Plan.md` passed on its target: record it first, then start the next"]
+      }
+    },
+    "archive": {
+      "title": "Notes sync and archive",
+      "about": "/cmd-notes-sync fixes notes that disagree with the code and moves finished Ongoing items to PROGRESS_ARCHIVE.md",
+      "paths": ["LLM/PROGRESS_ARCHIVE.md"],
+      "skills": {
+        "cmd-notes-sync": ["/cmd-notes-sync [date]", "Fix stale vault notes, move `[x]` Ongoing items to `PROGRESS_ARCHIVE.md`"]
+      }
+    },
+    "docs": {
+      "title": "Spec / Impl / Reference",
+      "about": "Folders for wire formats and protocols (Spec), one note per module (Impl) and background reading (Reference)",
+      "paths": ["Spec/Spec.md", "Impl/Impl.md", "Reference/Reference.md"]
+    },
+    "journal": {
+      "title": "Journal",
+      "about": "Day and week notes (Templater, Calendar); /cmd-journal and /cmd-report write Traditional Chinese summaries in your tone (TONE.md)",
+      "paths": ["Journal/Journal.md", "_Meta/Template", "_Meta/Scripts", "LLM/TONE.md",
+                ".obsidian/daily-notes.json", ".obsidian/templates.json"],
+      "skills": {
+        "cmd-journal": ["/cmd-journal [date]", "Chinese journal bullets in the day note, tone learning"],
+        "cmd-report": ["/cmd-report [date]", "Three Chinese parts in the week note"]
+      },
+      "plugins": ["templater-obsidian", "calendar"],
+      "core_plugins": ["daily-notes", "templates"]
+    },
+    "weekly-report": {
+      "title": "Weekly report",
+      "about": "WEEKLY_REPORT.md in Traditional Chinese and a filled company Word .doc (Word on Windows, reached from WSL)",
+      "requires": ["journal"],
+      "paths": ["LLM/WEEKLY_REPORT.md", "Tools/weekly_report"],
+      "skills": {
+        "cmd-weekly-report": ["/cmd-weekly-report [sync]", "`WEEKLY_REPORT.md`"],
+        "cmd-word-report": ["/cmd-word-report", "Run the weekly report tool, commit and push the vault"]
+      },
+      "config": ["weekly_report"]
+    },
+    "diagrams": {
+      "title": "Diagrams",
+      "about": "Dark theme for every Mermaid type, the mermaid-diagrams skill for the agent, a headless preview tool",
+      "paths": ["_Meta/Mermaid Preview.md", "Tools/mermaid_preview"],
+      "skills": {
+        "mermaid-diagrams": ["(adding or changing a diagram)", "Which Mermaid type to use, readability, theme classes"]
+      },
+      "plugins": ["mermaid-elk-renderer"],
+      "snippets": ["mermaid-afterglow", "pele-afterglow"],
+      "config": ["mermaid_preview"]
+    },
+    "screens": {
+      "title": "Screens",
+      "about": "App screens laid out on phone frames with the Vellum plugin, in a JSON the agent builds from",
+      "paths": ["Spec/Spec.md", "Spec/Screens.md"],
+      "plugins": ["vellum"]
+    }
+  }
+}
