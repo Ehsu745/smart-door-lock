@@ -20,8 +20,8 @@
 4. Pi 4 關機：`systemctl poweroff` 也要 sudo，使用者自己從桌面關
 
 **已完成**
-- **GitHub 公開**（2026-11-16）：使用者在網頁刪掉舊的 `Ehsu745/smart-door-lock`、自己檢查內容後建新的 private repo 推 `main`、`face-accuracy` → 改成 public → 兩個資料夾改名（舊的 → `smart-door-lock-old`，public → `smart-door-lock`）。PR #1（`face-accuracy` → `main`）是使用者開的，還沒合併
-- 準確度改善（§0.1 模型比較 `tools/bench_face_models.py`、§0.2 可靠度規劃）移到 `face-accuracy` 分支，main 只留指標；跑 `report` 前要 `git switch face-accuracy`（或用 worktree）
+- **GitHub 公開**（2026-11-16）：使用者在網頁刪掉舊的 `Ehsu745/smart-door-lock`、自己檢查內容後建新的 private repo 推 `main`、`face-accuracy` → 改成 public → 兩個資料夾改名（舊的 → `smart-door-lock-old`，public → `smart-door-lock`）。PR #1（`face-accuracy` → `main`）已合併，`face-accuracy` 分支已刪除（本機與 GitHub）
+- 準確度改善（§0.1 模型比較 `tools/bench_face_models.py`、§0.2 可靠度規劃）曾暫放在 `face-accuracy` 分支，2026-11-16 經 PR #1 合回 main，現在直接在 main 上
 - Pi 4 同步到 **v2.10.0**（rsync `smartlock/ app.py tests/ tools/ requirements*.txt`，資料不動）：pytest **183 passed**（含 Linux 才跑的序列埠測試）；`test-audio` → 找不到音效卡（還沒接）；Pi 4 也還沒接 USB 鏡頭。成員只有 `me`（master）
 - 刪了本機 `v2.8-gesture-tmp`（已合進 main，bundle 裡有）
 
