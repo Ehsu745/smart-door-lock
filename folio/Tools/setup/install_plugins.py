@@ -16,7 +16,9 @@ from pathlib import Path
 VAULT = Path(__file__).resolve().parents[2]
 OBS = VAULT / '.obsidian'
 INDEX = 'https://raw.githubusercontent.com/obsidianmd/obsidian-releases/master/{}.json'
-ASSET = 'https://github.com/{repo}/releases/latest/download/{name}'
+ASSET = 'https://github.com/{repo}/releases/{tag}/{name}'
+# releases/latest of calendar is 2.0.0 beta with id calendar-beta, which does not match community-plugins.json
+PIN = {'calendar': '1.5.10'}
 
 
 def get(url):
@@ -33,11 +35,11 @@ def exists(url):
         return False
 
 
-def fetch(repo, files, dest, optional, dry):
+def fetch(repo, files, dest, optional, dry, tag='latest/download'):
     dest.mkdir(parents=True, exist_ok=True)
     ok = True
     for name in files:
-        url = ASSET.format(repo=repo, name=name)
+        url = ASSET.format(repo=repo, tag=tag, name=name)
         if dry:
             found = exists(url)
             print(f'    {name:14} {"ok" if found else ("absent (optional)" if name in optional else "MISSING")}')
@@ -74,7 +76,8 @@ def main():
         if not repo:
             ok = False
             continue
-        ok &= fetch(repo, ['main.js', 'manifest.json', 'styles.css'], OBS / 'plugins' / pid, {'styles.css'}, a.dry_run)
+        tag = f'download/{PIN[pid]}' if pid in PIN else 'latest/download'
+        ok &= fetch(repo, ['main.js', 'manifest.json', 'styles.css'], OBS / 'plugins' / pid, {'styles.css'}, a.dry_run, tag)
 
     theme = json.loads((OBS / 'appearance.json').read_text(encoding='utf-8')).get('cssTheme')
     if theme:
