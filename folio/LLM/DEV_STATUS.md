@@ -6,14 +6,14 @@ sticker: lucide//activity
 > [!IMPORTANT]
 > **LLM Instructions**: Each `/cmd-*` command is an agent skill (`LLM/skills/`); shared rules are in [[LLM_GUIDE]]. `/cmd-sync` keeps this list.
 
-## 🚀 Today's Progress (2026-11-16)
-> [!todo]+ 3 items
-> - [x] **GitHub 公開**：`Ehsu745/smart-door-lock` 以改寫過的乾淨歷史重建並改成 public；舊資料夾改名 `smart-door-lock-old`（拿掉 remote）
-> - [x] **PR #1 合併**：`face-accuracy`（模型比較腳本、§0.1 / §0.2 規劃）合回 main，分支已刪
-> - [>] **升級成 Folio**：`feature/folio` 分支，vault 放 `folio/`，skills 用 repo 根目錄的 committed stub；CLAUDE.md 的狀態 / 規劃 / 交接搬進 vault
+## 🚀 Today's Progress (2026-11-17)
 
-## 📅 Yesterday's Progress (2026-11-15)
-> [!abstract]- 0 items
+## 📅 Yesterday's Progress (2026-11-16)
+> [!abstract]- 4 items
+> - **GitHub 公開**：smart-door-lock 以乾淨歷史重建並改成 public，舊資料夾改名 -old、拿掉 remote
+> - **PR #1 合併**：face-accuracy（模型比較腳本、可靠度規劃）合回 main
+> - **升級成 Folio**：vault 放 folio/、skills 用 committed stub、CLAUDE.md 的進度搬進 vault；PR #2 等合併
+> - **Obsidian 開啟 vault**：12 個外掛啟用，Calendar 固定 1.5.10
 
 ---
 
