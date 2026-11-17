@@ -1,0 +1,29 @@
+{
+  "_comment": "Values read by the vault tools and skills. Change these instead of editing scripts. template: true only in the Folio template itself (folio.py new drops it). project: the project's name. projects: the code repos this vault logs (relative to the vault); folio.py link links the skills into them for the agents in agents. features: set by folio.py (new / add / remove). folio: path to the Folio template, used by folio.py add. chat_language: the language agents chat in (empty: the language the user writes in); notes keep the language each command sets.",
+  "project": "smart-door-lock",
+  "owner": "Shang-En Hsu",
+  "coauthor": "Claude Opus 5.5 <noreply@anthropic.com>",
+  "chat_language": "zh-TW",
+  "projects": [
+    ".."
+  ],
+  "agents": {
+    "claude": ".claude/skills",
+    "codex": ".agents/skills"
+  },
+  "mermaid_preview": {
+    "obsidian_asar_glob": "/mnt/c/Users/<you>/AppData/Roaming/obsidian/obsidian-*.asar",
+    "edge": "/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+    "out_dir": "/mnt/c/Users/<you>/AppData/Local/Temp/mermaid_preview"
+  },
+  "folio": "../../folio",
+  "features": [
+    "test-queue",
+    "plan",
+    "archive",
+    "docs",
+    "journal",
+    "diagrams",
+    "screens"
+  ]
+}
