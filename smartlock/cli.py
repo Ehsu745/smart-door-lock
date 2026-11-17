@@ -430,13 +430,15 @@ def test_audio(cfg: Config, seconds: int = 5):
 
     import numpy as np
 
-    from .intercom import detect_devices, to_stereo
+    from .intercom import detect_devices, set_speaker_volume, to_stereo
 
     rec, play = (cfg.audio_device, cfg.audio_device) if cfg.audio_device else detect_devices()
     print(f'收音裝置：{rec or "找不到"}\n播放裝置：{play or "找不到"}')
     if not rec or not play:
         raise RuntimeError('找不到 USB 音效卡：arecord -l / aplay -l 看看有沒有「USB PnP Audio Device」，'
                            '或在 smartlock.env 設 AUDIO_DEVICE=plughw:卡號,0')
+    print(f'喇叭音量：{cfg.speaker_volume}%' if set_speaker_volume(play, cfg.speaker_volume)
+          else '喇叭音量：沒有調整（沒有卡號或 amixer），沒聲音的話用 alsamixer 調大')
     with tempfile.TemporaryDirectory() as tmp:
         path = f'{tmp}/test.wav'
         input(f'按 Enter 後對著麥克風講話 {seconds} 秒…')

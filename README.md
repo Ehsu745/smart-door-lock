@@ -119,10 +119,12 @@ bash deploy/install_service.sh --desktop # 登入桌面後在 Pi 螢幕顯示視
 ## 對講機（聽門口、預錄回覆）
 
 硬體：Waveshare「USB TO AUDIO」免驅動音效卡（內建 2 顆麥克風，Pi 上顯示為「USB PnP Audio Device」）＋兩顆喇叭。
-**左聲道（`VOLP/VOLN`）接門外喇叭、右聲道（`VORP/VORN`）接室內**；BTL 輸出的 N 不是地線，不能接 GND、兩聲道負端不能並在一起。
+喇叭接在卡上標著 `VORN / VORP / VOLP / VOLN` 的 4-pin 插座，成套的喇叭是一個插頭直接插上，不用自己接線。
+**左聲道（`VOLP/VOLN`）接門外喇叭、右聲道（`VORP/VORN`）接室內**（`test-audio` 先響的那顆是左聲道）；自己接線的話，BTL 輸出的 N 不是地線，不能接 GND、兩聲道負端不能並在一起。
 
-1. 插上音效卡，`python app.py test-audio`：自動找卡 → 錄 5 秒 → 左、右聲道各播一次 → 印音量與 `vcgencmd get_throttled`（不是 `0x0` = 欠壓）
-   - 聲音太小：`alsamixer` → F6 選 USB 卡 → F4 調麥克風增益
+1. 插上音效卡，`python app.py test-audio`：自動找卡 → 喇叭音量設 100% → 錄 5 秒 → 左、右聲道各播一次 → 印音量與 `vcgencmd get_throttled`（不是 `0x0` = 欠壓）
+   - 喇叭完全沒聲音：這張卡在 Linux 上的音量刻度不對（`dmesg` 會有「cval->res is probably wrong」），預設 62% 實際幾乎是靜音；程式啟動時會自動設成 100%（`SPEAKER_VOLUME` 可改），手動測試前用 `amixer -c 卡號 sset Speaker 100%`
+   - 錄音太小：`alsamixer` → F6 選 USB 卡 → F4 調麥克風增益（這張卡預設已經是最大），再靠近一點講話
    - 找不到卡或「Device or resource busy」：`arecord -l` 看卡號，在 `smartlock.env` 設 `AUDIO_DEVICE=plughw:卡號,0`（被 PipeWire 占用時改 `AUDIO_DEVICE=default`）
 2. 預錄語音：在 Mac 上 `python tools/make_sounds.py` 產生三段預設語音（macOS 中文語音「美佳」），再 `rsync -av sounds/ pi:door_pi_gesture/sounds/`。
    **檔名就是按鈕上的字**，開頭的編號用來排序（`01 請稍候，馬上來.wav`）；格式 16-bit PCM WAV、最長 30 秒；想用自己的聲音就錄好用同名檔蓋掉，不用重新啟動
