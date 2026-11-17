@@ -110,6 +110,7 @@ class Config:
     intercom: str = 'auto'                        # auto（有 USB 音效卡就啟用）| 1 | 0 | sim（Mac 開發用測試音）
     audio_device: str = ''                        # 例如 plughw:2,0；空白 = 自動找 USB 音效卡
     intercom_channel: str = 'left'                # 預錄語音從哪個聲道播：left（門外）| right（室內）| both
+    speaker_volume: int = 100                     # 啟動時把 USB 卡喇叭音量設成幾 %（這張卡預設 62% 幾乎沒聲音）
 
     # ---- 路徑 ----
     @property
@@ -218,4 +219,5 @@ class Config:
             intercom=env.get('INTERCOM', 'auto'),
             audio_device=env.get('AUDIO_DEVICE', ''),
             intercom_channel=env.get('INTERCOM_CHANNEL', 'left'),
+            speaker_volume=max(0, min(100, int(env.get('SPEAKER_VOLUME', 100)))),
         )

@@ -7,8 +7,8 @@ import pytest
 
 from smartlock.config import Config
 from smartlock.events import EventBus
-from smartlock.intercom import (CHUNK_BYTES, LISTEN_EVENT_GAP, Intercom, clip_label, find_card, make_intercom,
-                                read_wav, to_stereo)
+from smartlock.intercom import (CHUNK_BYTES, LISTEN_EVENT_GAP, Intercom, card_index, clip_label, find_card,
+                                make_intercom, read_wav, set_speaker_volume, to_stereo)
 
 from conftest import FakeClock, Harness
 
@@ -133,6 +133,61 @@ def test_make_intercom_without_card(tmp_path, monkeypatch):
     import smartlock.intercom as m
     monkeypatch.setattr(m, 'detect_devices', lambda: (None, None))
     assert make_intercom(Config(base=tmp_path)) is None
+
+
+# ==========================================
+# 喇叭音量（這張卡預設 62% 幾乎沒聲音）
+# ==========================================
+def test_card_index():
+    assert card_index('plughw:2,0') == '2'
+    assert card_index('hw:3,0') == '3'
+    assert card_index('plughw:CARD=Device,DEV=0') == 'Device'
+    assert card_index('default') is None
+    assert card_index('') is None
+
+
+class _FakeAmixer:
+    def __init__(self, ok_controls=('Speaker',)):
+        self.ok, self.calls = ok_controls, []
+
+    def __call__(self, args, **kw):
+        import subprocess
+        self.calls.append(args)
+        return subprocess.CompletedProcess(args, 0 if args[5] in self.ok else 1, '', '')
+
+
+@pytest.fixture
+def amixer(monkeypatch):
+    import smartlock.intercom as m
+    fake = _FakeAmixer()
+    monkeypatch.setattr(m.shutil, 'which', lambda tool: f'/usr/bin/{tool}')
+    monkeypatch.setattr(m.subprocess, 'run', fake)
+    return fake
+
+
+def test_set_speaker_volume(amixer):
+    assert set_speaker_volume('plughw:2,0', 100)
+    assert amixer.calls == [['amixer', '-q', '-c', '2', 'sset', 'Speaker', '100%', 'unmute']]
+
+
+def test_set_speaker_volume_falls_back_to_pcm(amixer):
+    amixer.ok = ('PCM',)
+    assert set_speaker_volume('plughw:2,0', 80)
+    assert [c[5] for c in amixer.calls] == ['Speaker', 'PCM']
+    amixer.ok = ()
+    assert not set_speaker_volume('plughw:2,0')
+
+
+def test_set_speaker_volume_skips_default_device(amixer):
+    assert not set_speaker_volume('default')
+    assert amixer.calls == []
+
+
+def test_make_intercom_sets_volume(tmp_path, monkeypatch, amixer):
+    import smartlock.intercom as m
+    monkeypatch.setattr(m, 'detect_devices', lambda: ('plughw:2,0', 'plughw:2,0'))
+    assert make_intercom(Config(base=tmp_path, speaker_volume=90)) is not None
+    assert amixer.calls == [['amixer', '-q', '-c', '2', 'sset', 'Speaker', '90%', 'unmute']]
 
 
 # ==========================================

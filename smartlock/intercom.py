@@ -69,6 +69,32 @@ def detect_devices():
     return tuple(out)
 
 
+def card_index(device: str):
+    """'plughw:2,0' / 'hw:2,0' → '2'；'default' 之類沒有卡號的回傳 None。"""
+    m = re.match(r'(?:plug)?hw:(?:CARD=)?([^,]+)', device or '')
+    return m.group(1) if m else None
+
+
+def set_speaker_volume(device: str, percent: int = 100) -> bool:
+    """把 USB 卡的喇叭音量設成 percent%（並取消靜音），成功回傳 True。
+
+    這張卡（0c76:1203）回報的音量刻度不對（核心訊息「cval->res is probably wrong」），
+    插上去預設 62% 實際幾乎沒聲音，所以每次啟動都直接設到 100%；音量大小改用語音檔本身控制。"""
+    card = card_index(device)
+    if card is None or not shutil.which('amixer'):
+        return False
+    for control in ('Speaker', 'PCM'):            # Waveshare 這張是 Speaker；其他 USB 卡常見 PCM
+        try:
+            r = subprocess.run(['amixer', '-q', '-c', card, 'sset', control, f'{percent}%', 'unmute'],
+                               capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if r.returncode == 0:
+            return True
+    log.warning('對講機：無法調整 %s 的喇叭音量（amixer -c %s scontrols 看控制項名稱）', device, card)
+    return False
+
+
 # ==========================================
 # 語音檔
 # ==========================================
@@ -331,6 +357,8 @@ def make_intercom(cfg, bus=None):
         if mode == '1':
             log.warning('對講機：找不到 USB 音效卡（arecord -l 看不到），先停用')
         return None
+    if play:
+        set_speaker_volume(play, cfg.speaker_volume)
     ic = Intercom(sounds, bus, (lambda: AlsaMic(rec)) if rec else None, AlsaSpeaker(play) if play else None,
                   cfg.intercom_channel, name=rec or play)
     log.info('對講機：收音 %s、播放 %s（%s聲道）；語音 %d 段（%s）', rec or '無', play or '無',
