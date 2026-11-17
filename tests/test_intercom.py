@@ -235,10 +235,12 @@ def test_status_without_intercom():
     assert c.get('/api/intercom').status_code == 404
 
 
-def test_intercom_needs_login(ic):
+def test_reply_needs_login_but_listen_does_not(ic):
     h, c = web(ic, '4321')
     assert c.get('/api/intercom').status_code == 401
-    assert c.get('/audio_feed').status_code == 401
+    r = c.get('/audio_feed', buffered=False)                # 聆聽跟影像一樣不用 PIN
+    assert r.status_code == 200
+    r.close()
     assert c.post('/api/intercom/play', json={'clip': '01 請稍候'}).status_code == 401
     assert c.post('/api/intercom/play', json={'clip': '01 請稍候', 'pin': '0000'}).status_code == 403
     assert ic.speaker.played == [] and 'pin_rejected' in h.kinds()
