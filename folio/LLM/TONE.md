@@ -25,3 +25,10 @@ Written by the user without a draft.
 
 ## Last draft
 Written by `/cmd-journal`; compared with the note on the next run.
+
+<!-- 2026-11-16 -->
+- 整理 smart-door-lock 的 git 歷史並清除私人資訊，以乾淨版本重建 GitHub repo 後改為公開
+- 整理 SFace / ArcFace 辨識模型比較腳本與門鎖可靠度提升規劃
+- 導入 Folio 工作紀錄架構，將進度、規劃與交接內容從 CLAUDE.md 整理至 vault，並透過 committed stub 讓 skills 隨 repo 使用
+- 整理 Pi 5 待驗證項目為 Test Queue A～F，以便後續上機測試
+- 設置 Obsidian vault 及 12 個外掛，並將 Calendar 固定於 1.5.10 版以對齊設定
