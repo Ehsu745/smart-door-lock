@@ -306,9 +306,9 @@ def create_web(system, storage=None, line=None, notifier=None, hardening=None, i
 
     @app.route('/audio_feed')
     def audio_feed():
-        """門口聲音：單聲道 16-bit little-endian PCM，取樣率在 X-Sample-Rate。前端用 Web Audio 播。"""
-        need_intercom()
-        if not intercom.can_listen:
+        """門口聲音：單聲道 16-bit little-endian PCM，取樣率在 X-Sample-Rate。前端用 Web Audio 播。
+        跟影像（/video_feed）一樣不需要 PIN；對門口播放（/api/intercom/play）才要。"""
+        if intercom is None or not intercom.can_listen:
             abort(404)
         from ..intercom import RATE
         sid = audio_streams.open(request.remote_addr)
