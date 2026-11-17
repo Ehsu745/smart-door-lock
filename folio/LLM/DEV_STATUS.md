@@ -7,12 +7,19 @@ sticker: lucide//activity
 > **LLM Instructions**: Each `/cmd-*` command is an agent skill (`LLM/skills/`); shared rules are in [[LLM_GUIDE]]. `/cmd-sync` keeps this list.
 
 ## 🚀 Today's Progress (2026-11-17)
+> [!abstract]- 6 items
+> - **smart-door-lock-old 搬家**：移到 `AI_smartlock_playground/old_ver/`，刪掉 `.venv`（877M → 4M）
+> - **Pi 5 升級 v2.5 → v2.10**：先備份 `~/door_pi_gesture_backup_v2.5_20261117.tgz`，pytest 全過；SFace 模型下載、舊照片登錄 60 張
+> - **對講機 Pi 5 實測**：音效卡、錄音、兩聲道播放、手機聆聽 / 回覆都通；回音可接受（[[Test Queue]] E）
+> - **喇叭沒聲音找到原因**：USB 卡音量刻度錯，預設 62% ≈ 靜音 → PR #3 啟動時自動設 100%
+> - **聆聽免 PIN**：比照影像，回覆仍要 PIN（PR #4）
+> - **PR #2、#3、#4 合併**，Pi 5 部署 main，pytest 188 passed（[[Test Queue]] G）
 
 ## 📅 Yesterday's Progress (2026-11-16)
 > [!abstract]- 4 items
 > - **GitHub 公開**：smart-door-lock 以乾淨歷史重建並改成 public，舊資料夾改名 -old、拿掉 remote
 > - **PR #1 合併**：face-accuracy（模型比較腳本、可靠度規劃）合回 main
-> - **升級成 Folio**：vault 放 folio/、skills 用 committed stub、CLAUDE.md 的進度搬進 vault；PR #2 等合併
+> - **升級成 Folio**：vault 放 folio/、skills 用 committed stub、CLAUDE.md 的進度搬進 vault；PR #2（已於 11-17 合併）
 > - **Obsidian 開啟 vault**：12 個外掛啟用，Calendar 固定 1.5.10
 
 ---
@@ -20,19 +27,19 @@ sticker: lucide//activity
 ## ⏳ Ongoing Progress
 ### 🍓 [PI] Pi 5 實機驗證
 > [!todo]- 7 open
-> - **v2.6～v2.10 都還沒在 Pi 5 門口實測**（細項：[[Test Queue]] A～F）：
->     - [ ] **人臉 SFace**：門口光線下本人距離分布、戴 / 不戴眼鏡、Pi 5 速度（Group A）
+> - **v2.6～v2.10 已部署到 Pi 5（11-17），門口實測還沒做**（細項：[[Test Queue]] A～G）：
+>     - [ ] **人臉 SFace**：等相機固定在門框；門口光線下本人距離分布、戴 / 不戴眼鏡、Pi 5 速度（Group A）
 >     - [ ] **回報誤認**：margin 3 / floor 35 用門口資料驗證（Group B）
->     - [ ] **手勢綁定**：Pi 上實測、iPhone / LINE 內建瀏覽器滾輪手感（Group C）
->     - [ ] **check-face / 補拍**：換地方架設就跑（Group D）
->     - [ ] **對講機**：接音效卡實測（Group E）
+>     - [ ] **手勢綁定**：eric、jenny 都還沒綁；Pi 上實測、iPhone / LINE 內建瀏覽器滾輪手感（Group C）
+>     - [ ] **check-face / 補拍**：相機裝好就跑（Group D）
+>     - [/] **對講機**：硬體通了；剩門口 1 m 收音、LINE 內建瀏覽器、重插後自動音量、聆聽免 PIN 手機實測（Group E、G）
 >     - [ ] **正式模式**：Arduino、systemd、網頁刪除成員耗時、LINE 真實發送（Group F）
-> - [ ] **部署 v2.10 到 Pi 5**：目前只同步到 Pi 4
+> - [?] **成員權限**：Pi 上 jenny 是 master、eric 是 guest，問使用者是不是本來就這樣設
 
 ---
 ### 🔩 [HW] 硬體
 > [!todo]- 4 open
-> - [ ] **Arduino 連不上**：11/04 `lsusb` 看不到 UNO → 檢查 USB 線是不是資料線
+> - [ ] **Arduino 連不上**：11/04、11/17（Pi 5）`lsusb` 都看不到 UNO → 檢查 USB 線是不是資料線、換孔（音效卡第一個孔也沒反應）
 > - [ ] **鎖的種類**：fail-secure / fail-safe、繼電器 NO / NC 還沒確認（[[提高可靠度]]）
 > - [ ] **喇叭**：品牌型號與阻抗（4 Ω / 8 Ω）看背面標示（[[對講機]]）
 > - [ ] **Pi 4 沒有 USB 鏡頭、沒接音效卡**
