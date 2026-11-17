@@ -14,7 +14,7 @@ sticker: lucide//lock
 ## 本機資料夾與備份
 > [!info] 位置
 > - `~/GITHUB/smart-door-lock`：改寫過歷史的乾淨版本，**在這份開發**；`user.email` 是 GitHub noreply
-> - `~/GITHUB/smart-door-lock-old`：舊歷史（含私人資訊），已拿掉 remote，只留著參考；**不要加 remote、不要推**，也不要 `git add .`（它的 `.gitignore` 沒擋 `CLAUDE.local.md`）
+> - `~/FCU/CE_2026/AI_smartlock_playground/old_ver/smart-door-lock-old`：舊歷史（含私人資訊），已拿掉 remote，只留著參考；**不要加 remote、不要推**，也不要 `git add .`（它的 `.gitignore` 沒擋 `CLAUDE.local.md`）
 > - 改寫前完整備份：bundle 檔（位置見 `CLAUDE.local.md`，含私人資訊，不要上傳）
 > - Pi 5 上 v2 之前的舊版完整備份：`~/door_pi_gesture_backup_1020`
 > - LINE token 從來沒進過 git（掃過全部歷史）
