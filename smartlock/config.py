@@ -80,6 +80,9 @@ class Config:
     kiosk: bool = False
     control_pin: str = ''
     public_url: str = ''
+    web_https: bool = True                        # 自簽憑證 HTTPS（手機用麥克風對門口講話一定要 HTTPS）；同一個埠的 http 會轉到 https
+    tls_cert: Optional[Path] = None               # None = 專案資料夾/certs/smartlock.crt（沒有就自動產生）
+    tls_key: Optional[Path] = None
     simulate: bool = False                        # True = 不接 Arduino，用文字模擬
 
     # ---- 哨兵（陌生人錄影） ----
@@ -111,8 +114,17 @@ class Config:
     audio_device: str = ''                        # 例如 plughw:2,0；空白 = 自動找 USB 音效卡
     intercom_channel: str = 'left'                # 預錄語音從哪個聲道播：left（門外）| right（室內）| both
     speaker_volume: int = 100                     # 啟動時把 USB 卡喇叭音量設成幾 %（這張卡預設 62% 幾乎沒聲音）
+    talk_max_seconds: float = 120.0               # 按住說話單次最長秒數
 
     # ---- 路徑 ----
+    @property
+    def cert_file(self) -> Path:
+        return Path(self.tls_cert) if self.tls_cert else self.base / 'certs' / 'smartlock.crt'
+
+    @property
+    def key_file(self) -> Path:
+        return Path(self.tls_key) if self.tls_key else self.base / 'certs' / 'smartlock.key'
+
     @property
     def gestures_file(self) -> Path:
         return self.base / 'gestures.json'
@@ -197,6 +209,9 @@ class Config:
             kiosk=_flag(env, 'KIOSK', '0'),
             control_pin=env.get('CONTROL_PIN', ''),
             public_url=env.get('PUBLIC_URL', ''),
+            web_https=_flag(env, 'WEB_HTTPS', '1'),
+            tls_cert=Path(env['TLS_CERT']) if env.get('TLS_CERT') else None,
+            tls_key=Path(env['TLS_KEY']) if env.get('TLS_KEY') else None,
             simulate=_flag(env, 'SIM_ARDUINO', '0'),
             sentinel=_flag(env, 'SENTINEL', '1'),
             sentinel_trigger=float(env.get('SENTINEL_TRIGGER', 5)),
@@ -220,4 +235,5 @@ class Config:
             audio_device=env.get('AUDIO_DEVICE', ''),
             intercom_channel=env.get('INTERCOM_CHANNEL', 'left'),
             speaker_volume=max(0, min(100, int(env.get('SPEAKER_VOLUME', 100)))),
+            talk_max_seconds=float(env.get('TALK_MAX_SECONDS', 120)),
         )

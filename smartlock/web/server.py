@@ -10,6 +10,7 @@
   /api/events、/api/records、/records/<id>/play|snapshot.jpg|download、DELETE /api/records/<id>
   /api/settings
   /api/intercom、/audio_feed（門口聲音，raw PCM）、/api/intercom/play（預錄語音；需登入或附 PIN）
+  /api/intercom/talk（開始按住說話；需登入或附 PIN）→ /api/intercom/talk/<id>（POST raw PCM）→ /api/intercom/talk/<id>/end
 
 有 PIN 時：開鎖、看紀錄、看成員、看設定都要先登入（輸入一次 PIN，這支手機在本次啟動期間都有效）。
 PIN 連續錯 5 次鎖 60 秒；改 PIN 後所有手機都要重新輸入。
@@ -147,7 +148,8 @@ def create_web(system, storage=None, line=None, notifier=None, hardening=None, i
     bindings = system.bindings
     app = Flask(__name__, static_folder=str(WEB_DIR / 'static'), static_url_path='/static')
     app.secret_key = os.urandom(32)                               # 重新啟動後需要重新輸入 PIN
-    app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Strict')
+    app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Strict',
+                      MAX_CONTENT_LENGTH=1 << 20)                  # 最大的上傳是按住說話的聲音（每段 ≤ 160 KB）
     logging.getLogger('werkzeug').setLevel(logging.WARNING)      # 不印每秒一次的 /api/status 請求紀錄
     guard = PinGuard(store)
     app.pin_guard = guard
@@ -331,19 +333,55 @@ def create_web(system, storage=None, line=None, notifier=None, hardening=None, i
         return Response(chunks(), mimetype='application/octet-stream',
                         headers={'Cache-Control': 'no-store', 'X-Sample-Rate': str(RATE), 'X-Accel-Buffering': 'no'})
 
-    @app.route('/api/intercom/play', methods=['POST'])
-    def intercom_play():
-        data = request.get_json(silent=True) or {}
+    def login_or_pin(data):
+        """已登入，或這次附了正確 PIN（順便登入）。回傳錯誤回應；通過回傳 None。"""
         if not logged_in():
             if not data.get('pin'):
                 abort(401)
             if not pin_ok(data.get('pin')):
                 return deny()
             login_session()
+        return None
+
+    @app.route('/api/intercom/play', methods=['POST'])
+    def intercom_play():
+        data = request.get_json(silent=True) or {}
+        refused = login_or_pin(data)
+        if refused:
+            return refused
         if intercom is None:
             abort(404)
         ok, msg = intercom.play(str(data.get('clip') or ''), request.remote_addr)
         return jsonify(success=ok, message=msg), (200 if ok else 409)
+
+    @app.route('/api/intercom/talk', methods=['POST'])
+    def intercom_talk_start():
+        """按住說話：開始。之後手機每 0.1～0.3 秒 POST 一段 16 kHz 單聲道 S16LE 到 /api/intercom/talk/<id>。"""
+        from ..intercom import RATE
+        refused = login_or_pin(request.get_json(silent=True) or {})
+        if refused:
+            return refused
+        if intercom is None or not intercom.can_talk:
+            abort(404)
+        ok, msg, tid = intercom.talk_start(request.remote_addr)
+        if not ok:
+            return jsonify(success=False, message=msg), 409
+        return jsonify(success=True, id=tid, rate=RATE, max_seconds=intercom.talk_max)
+
+    @app.route('/api/intercom/talk/<tid>', methods=['POST'])
+    def intercom_talk_feed(tid):
+        from ..intercom import TALK_MAX_BYTES
+        need_intercom()
+        if (request.content_length or 0) > TALK_MAX_BYTES:
+            return jsonify(success=False, message='一次送太多聲音'), 413
+        ok, msg = intercom.talk_feed(tid, request.get_data(cache=False))
+        return jsonify(success=ok, message=msg), (200 if ok else 410)
+
+    @app.route('/api/intercom/talk/<tid>/end', methods=['POST'])
+    def intercom_talk_end(tid):
+        need_intercom()
+        intercom.talk_end(tid)
+        return jsonify(success=True)
 
     @app.route('/api/health')
     def health():

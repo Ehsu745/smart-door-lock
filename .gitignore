@@ -49,5 +49,8 @@ bench_out/
 # 對講機語音（可能是自己的聲音）
 sounds/
 
+# HTTPS 自簽憑證（含私鑰，每台 Pi 自己產生）
+certs/
+
 # 私人交接資訊（Pi 帳號、LINE ID 等）
 CLAUDE.local.md

@@ -32,9 +32,12 @@
             <button class="cam-btn" id="listenBtn" aria-pressed="false" hidden>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5v5h3.5L12 19V5L7.5 9.5H4z"/><path class="wave" d="M15.5 8.8a4.5 4.5 0 0 1 0 6.4M18.3 6a8.5 8.5 0 0 1 0 12"/></svg>
               <span class="lbl">聆聽</span><span class="lvl" id="lvl"><i></i><i></i><i></i></span></button>
-            <button class="cam-btn" id="replyBtn" hidden>
+            <button class="cam-btn talk" id="talkBtn" aria-pressed="false" aria-label="按住對門口說話" hidden>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg>
+              <span class="lbl">按住說話</span><span class="lvl" id="talkLvl"><i></i><i></i><i></i></span></button>
+            <button class="cam-btn" id="replyBtn" aria-label="預錄回覆" hidden>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11H9l-5 4V5z"/></svg>
-              <span class="lbl">回覆</span></button>
+              <span class="lbl">預錄</span></button>
           </div>
         </div>
         <!-- 狀態列：固定高度，出現訪客 / 等手勢時只換內容，不推動下面的鎖 -->

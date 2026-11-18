@@ -83,7 +83,7 @@ button { font: inherit; color: inherit; }
 /* 對講機：疊在影像右下角，不佔門鎖頁的高度 */
 .cam-tools { position: absolute; right: 8px; bottom: 8px; display: flex; gap: 6px; }
 .cam-btn { display: flex; align-items: center; gap: 4px; height: 32px; padding: 0 10px; border: 0; border-radius: 16px;
-  background: rgba(20, 28, 33, .62); color: #fff; font-size: 13px; cursor: pointer; backdrop-filter: blur(4px);
+  background: rgba(20, 28, 33, .62); color: #fff; font-size: 13px; white-space: nowrap; cursor: pointer; backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px); }
 .cam-btn svg { flex: none; }
 .cam-btn .wave { opacity: .45; }
@@ -95,6 +95,16 @@ button { font: inherit; color: inherit; }
 .page.compact .cam-btn .lbl { display: none; }                                   /* 矮螢幕只留圖示 */
 .page.compact .cam-btn { width: 32px; padding: 0; justify-content: center; }
 .page.compact .cam-btn[aria-pressed=true] { width: auto; padding: 0 8px; }
+/* 按住說話：對講以對話為主，這顆最醒目；按住時變紅色 */
+.cam-btn.talk { background: rgba(46, 140, 120, .92); font-weight: 500; touch-action: none; user-select: none;
+  -webkit-user-select: none; -webkit-touch-callout: none; }
+.cam-btn.talk[data-state=prep] { background: var(--brass); }
+.cam-btn.talk[aria-pressed=true] { background: var(--signal); }
+.cam-btn.talk[aria-pressed=true] .lvl { display: flex; }
+.page.compact .cam-btn.talk { width: auto; padding: 0 10px; }
+.page.compact .cam-btn.talk .lbl { display: inline; }
+.cam-tools.talking #listenBtn .lbl, .cam-tools.talking #listenBtn .lvl { display: none; }
+.page.compact .cam-tools.talking #listenBtn { width: 32px; padding: 0; }
 /* 預錄回覆清單 */
 .sheet-sub { margin: -8px 0 12px; font-size: 13px; color: var(--ink-2); }
 .replies { display: grid; gap: 8px; }

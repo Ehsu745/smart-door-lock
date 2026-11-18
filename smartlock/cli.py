@@ -45,11 +45,12 @@ from .intercom import make_intercom
 from .bindings import GESTURES, GestureBindings
 from .learning import AttemptLog, Hardening
 from .config import PROJECT_ROOT
-from .qr import control_url, print_qr
+from .qr import control_url, lan_ip, print_qr
 from .line import LineClient, LineError, LineNotifier
 from .security import ENV_FILE, PinStore, load_env_file
 from .sentinel import Sentinel
 from .storage import Storage
+from .tls import cert_fingerprint, make_server, server_context
 from .web import create_web
 
 log = logging.getLogger('smartlock')
@@ -71,8 +72,9 @@ def check_port_free(port: int):
             raise RuntimeError(f'埠 {port} 已被使用：先關掉其他正在跑的程式（pkill -f "app.py run"）')
 
 
-def serve_web(web, port, stop):
-    """網頁伺服器：卡住的連線 20 秒後自動斷開；萬一伺服器本身出錯就記錄下來並重新啟動，不需要重開整個程式。"""
+def serve_web(web, port, stop, ssl_ctx=None):
+    """網頁伺服器：卡住的連線 20 秒後自動斷開；萬一伺服器本身出錯就記錄下來並重新啟動，不需要重開整個程式。
+    有 ssl_ctx 時同一個埠同時接 https 和 http（http 轉到 https），見 tls.py。"""
     from werkzeug.serving import WSGIRequestHandler
     from .web.server import STREAM_SEND_TIMEOUT
 
@@ -81,7 +83,8 @@ def serve_web(web, port, stop):
 
     while not stop.is_set():
         try:
-            web.run(host='0.0.0.0', port=port, threaded=True, use_reloader=False, request_handler=Handler)
+            server = make_server('0.0.0.0', port, web, Handler, ssl_ctx)
+            server.serve_forever()
         except Exception:
             log.exception('網頁伺服器錯誤，3 秒後重新啟動')
         if stop.wait(3):
@@ -134,10 +137,16 @@ def run(cfg: Config):
         log.info('LINE 通知：%s（訪客、陌生人錄影、開鎖失敗）', '只推給 LINE_USER_ID' if cfg.line_user_id else '廣播給所有好友')
     intercom = make_intercom(cfg, system.bus)
     web = create_web(system, storage, line, notifier, hardening, intercom)
-    threading.Thread(target=serve_web, args=(web, cfg.web_port, system.stop), daemon=True, name='web').start()
+    ssl_ctx = server_context(cfg, lan_ip())
+    if ssl_ctx is None and cfg.web_https:
+        cfg = dataclasses.replace(cfg, web_https=False)             # 憑證產生失敗：網址改回 http
+    threading.Thread(target=serve_web, args=(web, cfg.web_port, system.stop, ssl_ctx), daemon=True, name='web').start()
 
     url = control_url(cfg)
     log.info('網頁控制台：%s（本機也可用 http://localhost:%d）；Ctrl+C 結束', url, cfg.web_port)
+    if ssl_ctx is not None:
+        log.info('HTTPS 自簽憑證（指紋 %s…）：手機第一次開會說「連線不安全」，點「顯示詳細資訊 → 瀏覽此網站」；'
+                 'LINE 內建瀏覽器不能略過，請改用 Safari / Chrome 開', cert_fingerprint(cfg.cert_file))
     if cfg.enable_qr:
         print_qr(url)
     if system.pins.required:
