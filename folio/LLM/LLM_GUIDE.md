@@ -5,7 +5,7 @@ sticker: lucide//book-open
 ## ℹ️ Project Information
 - **Project**: smart-door-lock: 人臉 + 手勢雙重驗證智慧門鎖（Raspberry Pi 5 + Arduino UNO），Flask 手機控制頁、LINE 通知、對講機
 - **Repos**: `` at `..`
-- **Build / test**: Python 3.11 venv（`uv venv --python 3.11 .venv && uv pip install --python .venv/bin/python -r requirements-dev.txt`）；`python -m pytest -q`（183 個，Mac 179 passed / 4 skipped）；`python app.py run --sim`；手機版面 `python tools/preview_web.py`；改前端用 Playwright 看 375×548、390×664。目標裝置是 Pi 5（`~/door_pi_gesture`）。完整說明：repo 根目錄 `CLAUDE.md` §3、§6
+- **Build / test**: Python 3.11 venv（`uv venv --python 3.11 .venv && uv pip install --python .venv/bin/python -r requirements-dev.txt`）；`python -m pytest -q`（208 個，Mac 204 passed / 4 skipped）；`python app.py run --sim`；手機版面 `python tools/preview_web.py`；改前端用 Playwright 看 375×548、390×664。目標裝置是 Pi 5（`~/door_pi_gesture`）。完整說明：repo 根目錄 `CLAUDE.md` §3、§6
 - **Private**: 私人資訊只在 repo 根目錄 `CLAUDE.local.md`（不進 git）；這個 vault 在 public repo 裡，見 [[Repo 與私人資訊]]
 
 ---

@@ -13,7 +13,8 @@ Test checklists, one group per branch or batch of work, in the order it was done
 | C | v2.8 手勢綁定 | smart-door-lock | main | merged，Pi 5 已部署，待測 |
 | D | v2.9 check-face / 補拍 | smart-door-lock | main | merged，Pi 5 已部署，等相機裝上門框 |
 | E | v2.10 對講機階段 1、2 | smart-door-lock | main | merged，Pi 5 部分測過（E1、E2、E4） |
-| F | 正式模式與部署 | smart-door-lock | main | Pi 5 待測（Arduino 還偵測不到） |
+| F | 正式模式與部署 | smart-door-lock | main | Pi 5 待測；F1 Arduino 暫緩到裝門鎖（之前用 `--sim`） |
+| H | v2.11 按住說話 + HTTPS | smart-door-lock | `feat/https-talk` | Mac 測過，Pi 5 待測 |
 | G | 對講機喇叭音量、聆聽免 PIN | smart-door-lock | `fix/intercom-volume`、`feat/listen-without-pin` | merged `e642f8c`，Pi 5 部分測過（G1） |
 
 ## 2026-11-16 · Pi 5 驗收（[[Plan]] Phase 1）
@@ -81,9 +82,10 @@ Test checklists, one group per branch or batch of work, in the order it was done
 > [!todo]- Group F · 正式模式與部署（smart-door-lock）
 > **Branch** `main` · **Status** 還沒測
 > **Why**：11/04 Pi 實測只跑 `--sim`，正式模式（會真的開鎖）一直沒驗證；啟動前先問使用者。
-> - [ ] **F1 Arduino 正式模式**：`lsusb` 看得到 UNO、`test-arduino` 開 / 關鎖
+> - [-] **F1 Arduino 正式模式（暫緩到裝門鎖）**：`lsusb` 看得到 UNO、`test-arduino` 開 / 關鎖
 >     - Expect：送 `unlock` 回 `Unlocked: ...`，8 秒後 `Locked`
->     - > Pi 5（2026-11-17）：`lsusb` 看不到 Arduino、沒有 `/dev/ttyACM*`
+>     - > Pi 5（2026-11-17）：`lsusb` 看不到 Arduino、沒有 `/dev/ttyACM*`、`dmesg` 沒有插入紀錄
+>     - > 使用者（2026-11-17）：Arduino 開關鎖之前 demo 已測過，裝門鎖前都只用 `--sim`
 > - [ ] **F2 systemd 服務**（`deploy/`）
 >     - Expect：開機自動啟動、`WatchdogSec` 之後再加
 > - [ ] **F3 網頁刪除成員在 Pi 上重新 train 的耗時**
@@ -104,3 +106,24 @@ Test checklists, one group per branch or batch of work, in the order it was done
 >     - Expect：不用手動 `amixer` 就聽得到兩個聲道
 > - [ ] **G3 手機聆聽不跳 PIN、回覆仍跳 PIN**
 >     - Expect：按「聆聽」直接聽得到；按「回覆」跳 PIN 鍵盤，PIN 錯不會播放
+
+## 2026-11-18 · 對講以對話為主
+
+> [!todo]- Group H · v2.11 按住說話 + HTTPS（smart-door-lock）
+> **Branch** `feat/https-talk` · **Status** 還沒合併；Mac pytest 204 passed / 4 skipped，Playwright 測過；Pi 5 沒測
+> 改到：`smartlock/tls.py`（新）、`intercom.py`、`web/server.py`、`cli.py`、`config.py`、`qr.py`、前端三個檔、`tests/test_tls.py`（新）、`tests/test_intercom.py`、README、指令速查、`deploy/smartlock.env.example`、`.gitignore`
+> **Why**：他們要求對講以對話為主 → 手機要能對門口說話；瀏覽器只讓 HTTPS 頁面用麥克風。使用者選 Pi 自簽憑證 + 按住說話（半雙工）。
+> - [ ] **H1 Pi 5 第一次啟動產生憑證**：`python app.py run --sim`
+>     - Expect：log 有「產生自簽憑證」和指紋；`certs/` 有 crt / key（key 是 600）；QR 與網址是 `https://`；第二次啟動不重產
+> - [ ] **H2 iPhone Safari 略過警告**：開 `https://<IP>:5050`
+>     - Expect：「顯示詳細資訊 → 瀏覽此網站」後正常；影像、聆聽、紀錄都照常；打 `http://<IP>:5050` 會自動轉過去
+> - [ ] **H3 按住說話**：第一次按跳 PIN → 允許麥克風 → 按住講
+>     - Expect：門外喇叭聽得到、延遲約 0.5 秒內；放開後自動在聆聽，聽得到門口回答；說話中手機聽不到自己的回音
+> - [ ] **H4 iOS 說完之後聆聽音量**
+>     - Expect：放開後聆聽的音量和說話前差不多（沒有被切到聽筒）；靜音開關打開也有聲音
+> - [ ] **H5 兩支手機**：一支說話時另一支按
+>     - Expect：另一支顯示「另一支手機正在說話」；預錄也不能同時播
+> - [ ] **H6 LINE 內建瀏覽器**
+>     - Expect：打不開或按「說話」跳出說明，照說明改用 Safari 能用
+> - [ ] **H7 Android Chrome**（有的話）
+>     - Expect：「進階 → 繼續前往」後能按住說話
