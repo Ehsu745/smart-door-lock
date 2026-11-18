@@ -10,7 +10,10 @@ Usage (from WSL, any folder):
 The brief list (one '- **Title**: result' line per item) is written by the LLM; this script does the rest:
 day note location, section replace, DEV_STATUS headings, git commit of only the two files. Rules: LLM/skills/cmd-rollover.
 Without a Journal/ folder (no journal feature) only DEV_STATUS.md changes; older days stay in git history.
-Exit codes: 0 done, 1 Today empty (run /cmd-sync), 2 day note missing (open it in Obsidian), 3 day note section not empty.
+A missing day note (or one whose Templater code never ran: it still has '<%') is built here from
+_Meta/Template/Journal.md the same way the template does it (folder, prev / next, week / month / year notes),
+so the user does not have to open it in Obsidian first.
+Exit codes: 0 done, 1 Today empty (run /cmd-sync), 2 day note could not be built, 3 day note section not empty.
 """
 import argparse, datetime, json, re, subprocess, sys
 from pathlib import Path
@@ -41,6 +44,55 @@ def day_note(date):
         return p
     hits = list((VAULT / 'Journal').rglob(f'{date}.md'))
     return hits[0] if len(hits) == 1 else None
+
+
+TEMPLATER = re.compile(r'<%[\s\S]*?-?%>\n?')
+FRONT = re.compile(r'\A---\n[\s\S]*?\n---\n')
+
+
+def from_template(name, front):
+    """Template body without its front matter and Templater code, with the given front matter."""
+    body = read(VAULT / '_Meta' / 'Template' / name)[0]
+    body = TEMPLATER.sub('', FRONT.sub('', body, count=1)).rstrip('\n') + '\n'
+    return '---\n' + ''.join(f'{k}: {v}\n' for k, v in front.items()) + '---\n' + body
+
+
+def untouched_template(note):
+    """The note is still the raw Journal template (Templater never ran, nobody wrote in it)."""
+    def bare(text):
+        return TEMPLATER.sub('', FRONT.sub('', text, count=1)).strip()
+    text = read(note)[0]
+    return '<%' in text and bare(text) == bare(read(VAULT / '_Meta' / 'Template' / 'Journal.md')[0])
+
+
+def workday(d, step):
+    """Next / previous weekday (the template's prev / next skip Saturday and Sunday)."""
+    d += datetime.timedelta(days=step)
+    while d.weekday() >= 5:
+        d += datetime.timedelta(days=step)
+    return d
+
+
+def build_day_note(date):
+    """Do what _Meta/Template/Journal.md + _Meta/Scripts/journal_prepare.js do in Obsidian."""
+    d = datetime.date.fromisoformat(date)
+    thu = d + datetime.timedelta(days=3 - d.weekday())
+    year, month = f'{thu.year}', f'{thu:%y_%m}'
+    folder = VAULT / 'Journal' / year / month / f'{(thu.day + 6) // 7}'
+    folder.mkdir(parents=True, exist_ok=True)
+    for path, up, sticker in ((folder.parents[1] / f'{year}.md', 'Journal', 'lucide//calendar-days'),
+                              (folder.parent / f'{month}.md', year, 'lucide//calendar-range')):
+        if not path.exists():
+            path.write_text(f'---\nup: "[[{up}]]"\nsticker: {sticker}\n---\n', encoding='utf-8')
+    week = f'Week {d.isocalendar()[1]}'
+    if not (folder / f'{week}.md').exists():
+        (folder / f'{week}.md').write_text(from_template('Week .md', {'up': f'"[[{month}]]"',
+                                                                         'sticker': 'lucide//calendar-range'}),
+                                           encoding='utf-8')
+    note = folder / f'{date}.md'
+    note.write_text(from_template('Journal.md', {'up': week, 'sticker': 'lucide//calendar', 'prev': workday(d, -1),
+                                                 'next': workday(d, 1)}), encoding='utf-8')
+    return note
 
 
 def uncallout(body):
@@ -90,9 +142,20 @@ def main():
     note = None
     if (VAULT / 'Journal').is_dir():
         note = day_note(date)
+        if note and untouched_template(note):     # copied template whose Templater code never ran
+            stray = note
+            note = None
+        else:
+            stray = None
         if not note:
-            print(f'Day note {date}.md not found: open it in Obsidian (Templater builds it), then run again.')
-            sys.exit(2)
+            try:
+                note = build_day_note(date)
+            except (OSError, ValueError) as e:
+                print(f'Day note {date}.md could not be built ({e}): open it in Obsidian, then run again.')
+                sys.exit(2)
+            if stray and stray != note:
+                stray.unlink()
+            print(f'[Journal] built {note.relative_to(VAULT)}')
         j, j_crlf = read(note)
         if JOURNAL_HEAD not in j:
             sys.exit(f"{note.name}: heading {JOURNAL_HEAD.strip()} not found")
