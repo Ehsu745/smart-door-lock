@@ -6,22 +6,14 @@ sticker: lucide//activity
 > [!IMPORTANT]
 > **LLM Instructions**: Each `/cmd-*` command is an agent skill (`LLM/skills/`); shared rules are in [[LLM_GUIDE]]. `/cmd-sync` keeps this list.
 
-## 🚀 Today's Progress (2026-11-18)
-> [!todo]+ 4 items
-> - [x] **Arduino 暫緩到裝門鎖**：偵測不到是 USB 那層（`dmesg` 沒有插入紀錄）；demo 已測過開關鎖，裝鎖前一律 `--sim`
-> - [>] **按住說話 + HTTPS（v2.11）**：他們要求對講以對話為主；Pi 自簽憑證、同一個埠 http 轉 https、半雙工按住說話。Mac 測過（pytest 205、Playwright、區網整合），還沒 commit，Pi 5 + iPhone 待測（[[Test Queue]] H）
-> - [x] **rollover 自動建日記**：Obsidian 的 Templater 建立時常沒執行（11-16、11-17、11-18 都要手動）→ `rollover.py` 找不到日記或還是原始範本時，自己照範本規則建立
-> - [x] **rollover 11-17**
+## 🚀 Today's Progress (2026-11-20)
 
-
-## 📅 Yesterday's Progress (2026-11-17)
-> [!abstract]- 6 items
-> - **smart-door-lock-old 搬家**：移到 `AI_smartlock_playground/old_ver/`，877M → 4M
-> - **Pi 5 升級 v2.5 → v2.10**：已備份，pytest 全過，舊照片轉 SFace 60 張
-> - **對講機 Pi 5 實測**：錄音、兩聲道播放、手機聆聽 / 回覆都通，回音可接受
-> - **喇叭沒聲音找到原因**：USB 卡音量刻度錯，PR #3 啟動時自動設 100%
-> - **聆聽免 PIN**：比照影像，回覆仍要 PIN（PR #4）
-> - **PR #2～#5 合併**：Pi 5 部署 main，pytest 188 passed，Test Queue 記錄實測
+## 📅 Yesterday's Progress (2026-11-18)
+> [!abstract]- 4 items
+> - **Arduino 暫緩到裝門鎖**：偵測不到是 USB 那層；demo 已測過開關鎖，裝鎖前一律 `--sim`
+> - **按住說話 + HTTPS（v2.11）**：Pi 自簽憑證、同埠 http 轉 https、半雙工按住說話；Mac 測過，commit 並開 PR #6（draft）
+> - **rollover 自動建日記**：`rollover.py` 找不到日記或還是原始範本時，自己照範本規則建立
+> - **rollover 11-17**：完成
 
 ---
 
