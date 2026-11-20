@@ -37,7 +37,7 @@ Pi Camera 3 NoIR ─▶ Raspberry Pi 5 (4GB) ──USB 序列埠──▶ Arduin
 
 ```bash
 source .venv/bin/activate
-python -m pytest -q                 # 208 個測試，不需要相機、Arduino 或人臉模型（conftest 的 FakeFaceEngine）（Mac：204 passed, 4 skipped，序列埠 pty 測試只在 Linux 跑）
+python -m pytest -q                 # 216 個測試，不需要相機、Arduino 或人臉模型（conftest 的 FakeFaceEngine）（Mac：212 passed, 4 skipped，序列埠 pty 測試只在 Linux 跑）
 python app.py run --sim             # 完整系統，用模擬 Arduino
 python app.py records | cleanup | set-pin | set-gesture | check-face | test-camera | test-gesture | test-arduino | test-line | test-audio
 # Mac 測對講：INTERCOM=sim python app.py run --sim；預設語音：python tools/make_sounds.py
@@ -55,7 +55,7 @@ smartlock/
   config.py            所有設定，從環境變數讀（Config.from_env）
   security.py          PinStore（PBKDF2，pin.json 0600）、load_env_file（自動讀 smartlock.env）
   events.py            EventBus：狀態機只發事件，其他模組訂閱
-  door.py              DoorSystem 狀態機；process_frame() 可注入 clock，測試用假時鐘逐幀跑
+  door.py              DoorSystem 狀態機；process_frame() 可注入 clock，測試用假時鐘逐幀跑；step() 省電（沒臉、沒動時每秒只辨識 IDLE_FPS 次）
   face.py              FaceEngine（YuNet+SFace，測試換成假的：make_engine）、辨識、capture、train（登錄特徵）、set_role、個人門檻、冒充者比對
   learning.py          回報誤認：AttemptLog、Hardening（report / undo / reset）
   bindings.py          GestureBindings：每個主人綁定的開鎖手勢（gestures.json）

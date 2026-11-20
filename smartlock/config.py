@@ -48,6 +48,9 @@ class Config:
     rearm_seconds: float = 3.0                    # 人離開鏡頭幾秒後才允許再次自動開鎖
     report_margin: float = 3.0                    # 回報誤認後，門檻比最像的冒充者再嚴格多少（SFace 距離）
     report_floor: float = 35.0                    # 門檻最低收到這裡（cosine 0.65）；再低本人也常過不了，應該重拍
+    idle_after: float = 3.0                       # 沒看到臉、畫面也沒動幾秒後省電：找人臉降到 idle_fps（0 = 一直全速）
+    idle_fps: float = 2.0                         # 省電時每秒找幾次人臉（Pi 5 找一次約 70 ms、吃滿 4 核心）
+    motion_ratio: float = 0.01                    # 畫面有多少比例在變就算有動靜，馬上恢復全速
 
     # ---- Arduino ----
     arduino_port: Optional[str] = None            # None = 自動尋找
@@ -189,6 +192,9 @@ class Config:
             face_score=float(env.get('FACE_SCORE', 0.6)),
             report_margin=float(env.get('FACE_REPORT_MARGIN', 3)),
             report_floor=float(env.get('FACE_REPORT_FLOOR', 35)),
+            idle_after=float(env.get('IDLE_AFTER', 3)),
+            idle_fps=float(env.get('IDLE_FPS', 2)),
+            motion_ratio=float(env.get('MOTION_RATIO', 0.01)),
             arduino_port=env.get('ARDUINO_PORT') or None,
             baud=int(env.get('ARDUINO_BAUD', 9600)),
             cmd_unlock=env.get('CMD_UNLOCK', 'unlock'),

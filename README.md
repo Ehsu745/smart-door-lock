@@ -148,6 +148,16 @@ bash deploy/install_service.sh --desktop # 登入桌面後在 Pi 螢幕顯示視
 - 不想用 HTTPS：`smartlock.env` 設 `WEB_HTTPS=0`（只是不能按住說話，其他功能不變）；有自己的憑證：`TLS_CERT`、`TLS_KEY`
 - 不送 HSTS：自簽憑證加了 HSTS，瀏覽器就不再讓人按「仍要前往」
 
+## 省電（沒人時少找人臉）
+
+找人臉（YuNet）在 Pi 5 上一次約 70 ms、會吃滿 4 個核心；每幀都找的話門鎖程式約 350% CPU，沒裝好風扇時溫度會到 85°C 開始降頻，對講機也跟著卡。所以：
+
+- 鏡頭裡沒有臉、畫面也沒在動超過 `IDLE_AFTER`（3 秒）→ 每秒只找 `IDLE_FPS`（2）次
+- 每幀都做很便宜的移動偵測（160×120 灰階相減，約 0.2 ms）；畫面有 `MOTION_RATIO`（1%）以上在變 → 那一幀就找，恢復全速
+- 站著不動的人也會在下一次例行檢查（最多 0.5 秒）被看到；手勢階段、看得到臉時一律全速
+- 影像串流、哨兵預錄照常每幀處理；`/api/status` 的 `idle` 是目前是否省電中；`IDLE_AFTER=0` 關掉
+- Pi 5 實測（沒人時）：CPU 358% → 約 40%，溫度 82°C → 57°C，降頻解除
+
 ## 程式結構
 
 ```
@@ -159,7 +169,7 @@ smartlock/
   storage.py           SQLite 紀錄 + SD 卡容量管理 + 成員最近出現時間
   security.py          PIN 雜湊儲存、smartlock.env 載入
   line.py              LINE 額度查詢 + 通知（訪客、陌生人錄影、開鎖失敗；背景發送）
-  door.py              狀態機（人臉 → 手勢 → 開鎖），不碰硬體，可單獨測試
+  door.py              狀態機（人臉 → 手勢 → 開鎖）、省電（移動偵測），不碰硬體，可單獨測試
   face.py              人臉偵測（YuNet）、辨識（SFace）、採集、登錄、個人門檻與冒充者比對
   learning.py          回報誤認：嘗試紀錄、收緊門檻、冒充者、取消回報
   bindings.py          每個主人綁定的開鎖手勢（gestures.json，檔案改動自動重新讀取）
@@ -172,7 +182,7 @@ smartlock/
   qr.py                控制頁 QR code
   web/                 Flask API + 單頁 App（templates/index.html、static/app.js、app.css）
   cli.py               指令列與選單
-tests/                 208 個自動測試，不需要相機或 Arduino
+tests/                 216 個自動測試，不需要相機或 Arduino
 deploy/                systemd 服務與安裝腳本
 arduino/door_lock/     學弟的 Arduino sketch
 ```

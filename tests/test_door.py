@@ -252,3 +252,97 @@ def test_bindings_reload_and_validation(tmp_path):
         running.set('eric', 'Middle_Finger')
     (tmp_path / 'gestures.json').write_text('{壞掉的 json')
     assert running.get('eric') is None                                            # 檔案壞掉不會讓門鎖掛掉
+
+
+# ---- 省電：沒人、畫面沒動時少找幾次人臉 ----
+from conftest import DT, FRAME                                        # noqa: E402
+
+
+class CountingRecognizer:
+    def __init__(self):
+        self.faces, self.calls = [], 0
+
+    def identify(self, gray):
+        self.calls += 1
+        return list(self.faces)
+
+
+def idle_harness(**cfg):
+    h = Harness(Config(**cfg))
+    h.recognizer = h.system.recognizer = CountingRecognizer()
+    h.hooked = []
+    h.system.frame_hooks.append(lambda frame, faces, now: h.hooked.append(len(faces)))
+    return h
+
+
+def run(h, seconds, frame=FRAME, faces=()):
+    h.recognizer.faces = list(faces)
+    n = max(1, round(seconds / DT))
+    before = h.recognizer.calls
+    for _ in range(n):
+        h.system.step(frame.copy())
+        h.clock.t += DT
+    return h.recognizer.calls - before, n
+
+
+def moved():
+    f = FRAME.copy()
+    f[100:300, 200:400] = 255 - f[100:300, 200:400]                  # 有人走進來：一大塊變了
+    return f
+
+
+def test_idle_detects_only_a_few_times_per_second():
+    h = idle_harness(idle_after=3, idle_fps=2)
+    calls, n = run(h, 2.5)
+    assert calls == n                                                 # 剛啟動：每幀都找
+    run(h, 1.0)
+    calls, n = run(h, 4.0)
+    assert 7 <= calls <= 9 and n > 40                                 # 省電：每秒約 2 次
+    assert h.system.snapshot()['idle'] is True
+    assert len(h.hooked) == round(7.5 / DT) and set(h.hooked) == {0}  # 省電時每幀照樣交給哨兵（預錄緩衝）
+
+
+def test_motion_wakes_up_immediately():
+    h = idle_harness(idle_after=3, idle_fps=2)
+    run(h, 5.0)
+    assert h.system.idle
+    before = h.recognizer.calls
+    h.system.step(moved())
+    assert h.recognizer.calls == before + 1 and not h.system.idle    # 動的那一幀就找
+    calls, n = run(h, 2.0, moved())                                   # 停在新位置也維持全速 idle_after 秒
+    assert calls == n
+
+
+def test_face_keeps_full_speed_even_when_still():
+    h = idle_harness(idle_after=3, idle_fps=2)
+    calls, n = run(h, 6.0, faces=[STRANGER])
+    assert calls == n and not h.system.idle
+
+
+def test_still_face_found_by_idle_check_wakes_up():
+    h = idle_harness(idle_after=3, idle_fps=2)
+    run(h, 5.0)
+    calls, _ = run(h, 0.6, faces=[STRANGER])                          # 站著不動：下一次例行檢查就看到
+    assert calls >= 1
+    calls, n = run(h, 2.0, faces=[STRANGER])
+    assert calls == n
+
+
+def test_gesture_phase_never_idles():
+    h = idle_harness(idle_after=0.5, idle_fps=1)
+    run(h, 1.0, faces=[MASTER])
+    assert h.phase == 'gesture'
+    calls, n = run(h, 1.0)                                            # 手擋住臉、畫面也沒動
+    assert calls == n
+
+
+def test_idle_disabled():
+    h = idle_harness(idle_after=0)
+    calls, n = run(h, 6.0)
+    assert calls == n and h.system.snapshot()['idle'] is False
+
+
+def test_idle_config_from_env():
+    c = Config.from_env({'IDLE_AFTER': '5', 'IDLE_FPS': '1', 'MOTION_RATIO': '0.02'})
+    assert (c.idle_after, c.idle_fps, c.motion_ratio) == (5, 1, 0.02)
+    assert Config.from_env({}).idle_after == 3
