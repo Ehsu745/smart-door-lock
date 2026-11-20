@@ -7,8 +7,8 @@ import pytest
 
 from smartlock.config import Config
 from smartlock.events import EventBus
-from smartlock.intercom import (CHUNK_BYTES, LISTEN_EVENT_GAP, Intercom, card_index, clip_label, find_card,
-                                make_intercom, read_wav, set_speaker_volume, to_stereo)
+from smartlock.intercom import (CHUNK_BYTES, LISTEN_EVENT_GAP, TALK_IDLE, Intercom, card_index, clip_label,
+                                find_card, make_intercom, read_wav, set_speaker_volume, to_stereo)
 
 from conftest import FakeClock, Harness
 
@@ -46,14 +46,36 @@ class FakeMic:
         pass
 
 
+class FakeStream:
+    def __init__(self, rate):
+        self.rate, self.data, self.closed = rate, bytearray(), False
+
+    def write(self, pcm):
+        self.data += pcm
+
+    def close(self):
+        self.closed = True
+
+
 class FakeSpeaker:
     def __init__(self):
         self.played = []
+        self.streams = []
         self.release = threading.Event()
 
     def play(self, pcm, rate):
         self.played.append((pcm, rate))
         self.release.wait(2)
+
+    def stream(self, rate):
+        self.streams.append(FakeStream(rate))
+        return self.streams[-1]
+
+
+def join_talk():
+    for t in threading.enumerate():
+        if t.name == 'intercom-talk':
+            t.join(3)
 
 
 @pytest.fixture
@@ -236,7 +258,7 @@ def test_slow_listener_drops_oldest(ic):
 # ==========================================
 # 播放
 # ==========================================
-def test_play_left_channel_and_event(ic):
+def test_play_both_channels_and_event(ic):
     ok, msg = ic.play('01 請稍候', '1.2.3.4')
     assert ok and '請稍候' in msg and ic.status()['playing'] == '請稍候'
     ic.speaker.release.set()
@@ -245,7 +267,7 @@ def test_play_left_channel_and_event(ic):
             t.join(2)
     pcm, rate = ic.speaker.played[0]
     stereo = np.frombuffer(pcm, '<i2').reshape(-1, 2)
-    assert rate == 16000 and np.abs(stereo[:, 0]).max() > 0 and not stereo[:, 1].any()
+    assert rate == 16000 and np.abs(stereo[:, 0]).max() > 0 and (stereo[:, 0] == stereo[:, 1]).all()   # 預設兩邊都響
     assert ic.status()['playing'] is None
     assert ic.events[-1].kind == 'intercom_reply' and '請稍候' in ic.events[-1].text
 
@@ -266,6 +288,123 @@ def test_no_speaker(tmp_path):
 
 
 # ==========================================
+# 按住說話
+# ==========================================
+PCM = (np.arange(1600) % 200 * 50).astype('<i2').tobytes()      # 0.1 秒
+
+
+def test_talk_plays_on_both_channels_and_logs_seconds(ic):
+    ok, _, tid = ic.talk_start('1.2.3.4')
+    assert ok and ic.status()['talking']
+    for _ in range(10):
+        assert ic.talk_feed(tid, PCM) == (True, '')
+    assert ic.talk_end(tid)
+    join_talk()
+    stream = ic.speaker.streams[0]
+    stereo = np.frombuffer(bytes(stream.data), '<i2').reshape(-1, 2)
+    assert stream.rate == 16000 and stream.closed and len(stereo) == 16000
+    assert stereo[:, 0].any() and (stereo[:, 0] == stereo[:, 1]).all()
+    assert not ic.status()['talking']
+    assert ic.events[-1].kind == 'intercom_talk' and '1 秒' in ic.events[-1].text
+
+
+def test_talk_feed_after_end_is_rejected(ic):
+    _, _, tid = ic.talk_start('a')
+    ic.talk_end(tid)
+    join_talk()
+    assert ic.talk_feed(tid, PCM)[0] is False
+    assert ic.talk_feed('wrong', PCM)[0] is False
+    assert [e.kind for e in ic.events] == []                     # 沒有聲音就不記事件
+
+
+def test_one_talker_at_a_time_and_no_clip_while_talking(ic):
+    _, _, tid = ic.talk_start('a')
+    ok, msg, _ = ic.talk_start('b')
+    assert not ok and '另一支手機' in msg
+    ok, msg = ic.play('01 請稍候')
+    assert not ok and '說話' in msg
+    ic.talk_end(tid)
+    join_talk()
+    ok, _, tid = ic.talk_start('b')
+    assert ok
+    ic.talk_end(tid)
+    join_talk()
+
+
+def test_same_phone_can_restart_talk(ic):
+    _, _, old = ic.talk_start('a')
+    ok, _, new = ic.talk_start('a')                               # 上一次的「放開」沒送到
+    assert ok and new != old
+    assert ic.talk_feed(old, PCM)[0] is False and ic.talk_feed(new, PCM)[0]
+    ic.talk_end(new)
+    join_talk()
+
+
+def test_no_talk_while_clip_playing(ic):
+    assert ic.play('01 請稍候')[0]
+    ok, msg, tid = ic.talk_start('a')
+    assert not ok and '正在播放' in msg and tid is None
+
+
+def test_talk_ends_when_phone_goes_quiet(ic):
+    _, _, tid = ic.talk_start('a')
+    ic.talk_feed(tid, PCM)
+    ic.test_clock.t += TALK_IDLE + 0.1
+    join_talk()
+    assert not ic.talking and ic.speaker.streams[0].closed
+    assert ic.talk_feed(tid, PCM)[0] is False
+
+
+def test_talk_max_seconds(ic):
+    ic.talk_max = 10
+    _, _, tid = ic.talk_start('a')
+    ic.test_clock.t += 11
+    ok, msg = ic.talk_feed(tid, PCM)
+    assert not ok and '10 秒' in msg
+    join_talk()
+
+
+def test_listeners_hear_nothing_while_talking(ic):
+    from queue import Empty
+    q = ic.subscribe('a')
+    assert q.get(timeout=2)
+    _, _, tid = ic.talk_start('b')
+    threading.Event().wait(0.05)
+    while not q.empty():
+        q.get_nowait()
+    with pytest.raises(Empty):
+        q.get(timeout=0.2)
+    ic.talk_end(tid)
+    join_talk()
+    assert q.get(timeout=2)
+    ic.unsubscribe(q)
+
+
+def test_speaker_without_stream_cannot_talk(tmp_path):
+    class PlayOnly:
+        def play(self, pcm, rate):
+            pass
+    ic = Intercom(tmp_path, speaker=PlayOnly())
+    assert ic.can_play and not ic.can_talk
+    assert ic.talk_start('a')[0] is False
+
+
+def test_sim_stream_plays_after_release():
+    from smartlock.intercom import SimStream
+    played = []
+
+    class Spk:
+        def play(self, pcm, rate):
+            played.append((len(pcm), rate))
+    s = SimStream(Spk(), 16000)
+    s.write(b'\0' * 400)
+    s.write(b'\0' * 400)
+    assert played == []
+    s.close()
+    assert played == [(800, 16000)]
+
+
+# ==========================================
 # 網頁 API
 # ==========================================
 def web(ic, pin=''):
@@ -279,7 +418,7 @@ def web(ic, pin=''):
 def test_status_shows_intercom_without_listener_count(ic):
     _, c = web(ic)
     d = c.get('/api/status').get_json()['intercom']
-    assert d == {'listen': True, 'reply': True, 'playing': None}
+    assert d == {'listen': True, 'reply': True, 'talk': True, 'talking': False, 'playing': None}
 
 
 def test_status_without_intercom():
@@ -324,4 +463,42 @@ def test_audio_feed_streams_pcm(ic):
 
 def test_settings_shows_intercom(ic):
     _, c = web(ic)
-    assert c.get('/api/settings').get_json()['intercom'] == {'device': '', 'channel': 'left', 'clips': 2}
+    assert c.get('/api/settings').get_json()['intercom'] == {'device': '', 'channel': 'both', 'clips': 2}
+
+
+def test_talk_api_needs_login_then_streams(ic):
+    h, c = web(ic, '4321')
+    assert c.post('/api/intercom/talk', json={}).status_code == 401
+    assert c.post('/api/intercom/talk', json={'pin': '0000'}).status_code == 403
+    r = c.post('/api/intercom/talk', json={'pin': '4321'})
+    d = r.get_json()
+    assert r.status_code == 200 and d['rate'] == 16000 and d['max_seconds'] == 120
+    tid = d['id']
+    r = c.post(f'/api/intercom/talk/{tid}', data=PCM, content_type='application/octet-stream')
+    assert r.status_code == 200
+    assert c.get('/api/status').get_json()['intercom']['talking'] is True
+    assert c.post(f'/api/intercom/talk/{tid}/end').status_code == 200
+    join_talk()
+    assert c.post(f'/api/intercom/talk/{tid}', data=PCM).status_code == 410   # 前端看到 410 就停止送
+    assert 'intercom_talk' in h.kinds()
+
+
+def test_talk_api_busy_and_too_large(ic):
+    _, c = web(ic)
+    tid = c.post('/api/intercom/talk', json={}).get_json()['id']
+    other = web(ic)[1]
+    other.environ_base['REMOTE_ADDR'] = '10.0.0.9'
+    r = other.post('/api/intercom/talk', json={})
+    assert r.status_code == 409 and '另一支手機' in r.get_json()['message']
+    from smartlock.intercom import TALK_MAX_BYTES
+    assert c.post(f'/api/intercom/talk/{tid}', data=b'\0' * (TALK_MAX_BYTES + 2)).status_code == 413
+    c.post(f'/api/intercom/talk/{tid}/end')
+    join_talk()
+
+
+def test_talk_feed_needs_login(ic):
+    _, c = web(ic, '4321')
+    _, _, tid = ic.talk_start('127.0.0.1')
+    assert c.post(f'/api/intercom/talk/{tid}', data=PCM).status_code == 401
+    ic.talk_end(tid)
+    join_talk()

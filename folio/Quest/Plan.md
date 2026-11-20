@@ -12,7 +12,7 @@ The project's phases, for work built in planned steps and checked on its target 
 
 > [!NOTE] Status: in progress
 > v2.6（SFace）到 v2.10（對講機階段 1、2）都已進 main，但只在 Mac 和 Pi 4 跑過，還沒在 Pi 5 門口實測。部署 v2.10 到 Pi 5，跑完 [[Test Queue]] A～F。
-> **Passed means**：Pi 5 接 Arduino 正式模式下，本人人臉 + 綁定手勢能開門、陌生人與訪客不開；手機能聽門口聲音、播預錄語音。
+> **Passed means**：Pi 5 `--sim` 模式下，本人人臉 + 綁定手勢判定開門、陌生人與訪客不開；手機能聽門口聲音、播預錄語音。接 Arduino 正式模式等裝門鎖時再測（Arduino 開關鎖之前 demo 已測過）。
 
 ## Passed
 

@@ -49,6 +49,16 @@ const Real = {
   resetThreshold: (name, pin) => post(`/api/users/${encodeURIComponent(name)}/threshold/reset`, { pin }),
   intercom: () => http('/api/intercom'),
   playClip: (clip, pin) => post('/api/intercom/play', { clip, pin }),
+  talkStart: (pin) => post('/api/intercom/talk', { pin }),
+  talkSend: async (id, pcm) => {
+    const r = await fetch(`/api/intercom/talk/${encodeURIComponent(id)}`, { method: 'POST', body: pcm, cache: 'no-store',
+      headers: { 'Content-Type': 'application/octet-stream' } });
+    let data = {};
+    try { data = await r.json(); } catch (e) {}
+    if (r.status === 401) throw new AuthError(data.message || '需要輸入 PIN');
+    return { status: r.status, ok: r.ok, ...data };
+  },
+  talkEnd: (id) => post(`/api/intercom/talk/${encodeURIComponent(id)}/end`),
 };
 
 const Demo = (() => {
@@ -97,7 +107,7 @@ const Demo = (() => {
         unlocked: left > 0, unlock_left: left, unlock_seconds: 8, auto: st.auto, require_gesture: true,
         connected: true, arduino: '模擬模式（未接 Arduino）', pin_required: !!st.pin,
         sentinel: { state: stranger && p > 30 ? 'recording' : stranger ? 'watching' : 'idle', seconds: Math.round(p - 30) },
-        intercom: { listen: true, reply: true, playing: now() < st.playUntil ? st.playing : null },
+        intercom: { listen: true, reply: true, talk: true, talking: false, playing: now() < st.playUntil ? st.playing : null },
       };
     },
     async login(pin) {
@@ -227,7 +237,7 @@ function go(i, animate = true) {
   $('tabInd').style.transform = `translateX(${page * 100}%)`;
   tabs.forEach((t, k) => t.setAttribute('aria-selected', String(k === page)));
   setLive(page === 0 && !document.hidden);           // 離開門鎖頁就停止影像串流，省 Pi 的 CPU 和網路
-  if (page !== 0) listenStop();                      // 聲音也一樣
+  if (page !== 0) { listenStop(); talkRelease(); }          // 聲音也一樣
   if (loaders[page]) loaders[page]();
   if (page === 2) $('histDot').hidden = true;
   history.replaceState(null, '', '#' + PAGES[page]);
@@ -279,6 +289,7 @@ function fitDoor() {
   if (!H || !W) return;
   const compact = H < 520;
   pageEl.classList.toggle('compact', compact);
+  paintTalk($('talkBtn').dataset.state || '');       // 矮螢幕換短的文字
   const strip = compact ? 60 : 68, controls = 52, stateH = compact ? 44 : 52, pad = 16 + 12 + 16;
   const room = H - strip - controls - stateH - pad;                    // 影像 + 鎖 可以用的高度
   let camH = Math.min(W * 3 / 4, room * (compact ? 0.56 : 0.62));
@@ -454,14 +465,15 @@ function reconnectLive(delay = 2000) {
 $('live').addEventListener('error', () => reconnectLive());
 setInterval(() => { if (!DEMO && page === 0 && !document.hidden && Date.now() - liveSince > 9 * 60000) reconnectLive(0); }, 30000);
 // 分頁被切走、關閉或放進背景時，一定要放掉串流，不然會一直佔著瀏覽器的連線名額
-window.addEventListener('pagehide', () => { setLive(false); listenStop(); });
+window.addEventListener('pagehide', () => { setLive(false); listenStop(); talkRelease(); });
 
 /* =========================================================
-   對講機：聽門口（raw PCM 串流 → Web Audio）、預錄回覆
+   對講機：聽門口（raw PCM 串流 → Web Audio）、按住說話、預錄回覆
    ========================================================= */
 function renderIntercom(ic) {
-  show('camTools', !!ic && (ic.listen || ic.reply));
+  show('camTools', !!ic && (ic.listen || ic.reply || ic.talk));
   show('listenBtn', !!ic && ic.listen);
+  show('talkBtn', !!ic && ic.talk);
   show('replyBtn', !!ic && ic.reply);
   if (ic && !ic.listen && Listen.on) listenStop();
   // 回覆清單開著時：播放中那一段標「播放中」，其他先停用
@@ -482,8 +494,8 @@ function paintListen() {
   b.querySelector('.lbl').textContent = Listen.on ? '聆聽中' : '聆聽';
   if (!Listen.on) paintLevel(0);
 }
-function paintLevel(v) {
-  const bars = $('lvl').children, k = [0.6, 1, 0.75];
+function paintLevel(v, id = 'lvl') {
+  const bars = $(id).children, k = [0.6, 1, 0.75];
   for (let i = 0; i < 3; i++) bars[i].style.height = `${Math.round(3 + 9 * Math.min(1, v * k[i]))}px`;
 }
 function listenStart() {
@@ -495,8 +507,8 @@ function listenStart() {
     return;
   }
   try {
-    // iPhone：Web Audio 預設跟著靜音開關；設成 playback 才和影片一樣有聲音（Safari 16.4+）
-    if (navigator.audioSession) navigator.audioSession.type = 'playback';
+    // iPhone：Web Audio 預設跟著靜音開關；設成 playback 才和影片一樣有聲音（Safari 16.4+）。麥克風開著時要維持錄音模式
+    if (navigator.audioSession && !Talk.pressed && !Talk.stream) navigator.audioSession.type = 'playback';
     Listen.ctx = Listen.ctx || new (window.AudioContext || window.webkitAudioContext)();
     Listen.ctx.resume();                 // 一定要在按鈕的 click 裡呼叫，iOS 才允許出聲
   } catch (e) { toast('這個瀏覽器不能播放聲音'); listenStop(); return; }
@@ -581,6 +593,196 @@ async function playReply(id) {
   poll();
 }
 $('replyBtn').addEventListener('click', replySheet);
+
+/* 按住說話（半雙工，像對講機）：按下 → 同時拿麥克風和向 Pi 要求開始 → 每 0.15 秒把 16 kHz 單聲道 PCM POST 到 Pi
+   → 喇叭播出；放開就停，同時自動開「聆聽」聽對方回答。Pi 還沒回應前講的話先存著，不會吃掉開頭。
+   放開後麥克風留 1 分鐘（TALK_KEEP_MS），下次按下馬上能講；離開門鎖頁 / 到背景就關。麥克風只有 HTTPS 頁面能用。 */
+const TALK_RATE = 16000;
+const Talk = { pressed: false, rec: false, id: null, stream: null, src: null, node: null, opening: null, chunks: [],
+  buffered: 0, pos: 0, acc: 0, cnt: 0, sending: null, timer: 0, keep: 0, demo: 0, gen: 0 };
+function paintTalk(state) {             // '' | 'prep'（拿麥克風中）| 'on'（說話中）
+  const b = $('talkBtn');
+  b.dataset.state = state;
+  b.setAttribute('aria-pressed', String(state === 'on'));
+  const short = $('p-door').classList.contains('compact');
+  const text = state === 'on' ? '說話中' : state === 'prep' ? '準備中…' : (short ? '說話' : '按住說話');
+  $('camTools').classList.toggle('talking', state === 'on');     // 說話中：聆聽按鈕只留圖示，讓出空間
+  if (b.querySelector('.lbl').textContent !== text) b.querySelector('.lbl').textContent = text;
+  if (state !== 'on') paintLevel(0, 'talkLvl');
+}
+function talkHelp() {
+  const url = location.href.replace(/^http:/, 'https:');
+  openSheet(`<h3>對門口說話要用 HTTPS</h3>
+    <p class="sheet-sub">瀏覽器只允許 HTTPS 網頁使用麥克風</p>
+    <div class="infobox">1. 用 Safari 或 Chrome 開 <code>${esc(url)}</code>（LINE 內建瀏覽器不行：右下角「⋯ → 用瀏覽器開啟」）<br>
+    2. 出現「連線不安全 / 不是私人連線」時，點「顯示詳細資訊 → 瀏覽此網站」（Chrome：「進階 → 繼續前往」）。門鎖用的是自己產生的憑證，每支手機第一次會問一次<br>
+    3. 第一次按住說話時，允許使用麥克風</div>`);
+}
+function talkDown() {
+  if (Talk.pressed) return;
+  Talk.pressed = true;
+  const gen = ++Talk.gen;
+  if (DEMO) {
+    paintTalk('on');
+    Talk.demo = setInterval(() => paintLevel(Math.random() * 0.8, 'talkLvl'), 120);
+    return;
+  }
+  if (!window.isSecureContext || !(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+    Talk.pressed = false; paintTalk(''); talkHelp(); return;
+  }
+  clearTimeout(Talk.keep);
+  if (!Listen.on) listenStart();                     // 對話：說完放開就聽得到對方回答
+  if (navigator.audioSession) navigator.audioSession.type = 'play-and-record';
+  if (!Talk.id) { Talk.chunks = []; Talk.buffered = 0; }       // 上一次還在送尾巴就不要清掉
+  Talk.pos = 0; Talk.acc = 0; Talk.cnt = 0;
+  paintTalk(Talk.node ? 'on' : 'prep');              // 麥克風還開著：按下去馬上能講
+  Talk.rec = !!Talk.node;
+  clearInterval(Talk.timer);
+  Talk.timer = setInterval(talkFlush, 150);
+  talkOpen(gen);
+}
+async function talkOpen(gen) {
+  // 麥克風和「開始說話」同時進行；伺服器還沒準備好時講的話先存在 Talk.chunks，拿到 id 再一起送
+  const start = Api.talkStart().then((r) => ({ r }), (e) => ({ e }));
+  if (!(await talkMic())) {
+    talkAbort(gen);
+    const { r } = await start;
+    if (r && r.ok) try { await Api.talkEnd(r.id); } catch (e) {}
+    return;
+  }
+  if (gen === Talk.gen && Talk.pressed) { Talk.rec = true; paintTalk('on'); if (navigator.vibrate) navigator.vibrate(15); }
+  const { r, e } = await start;
+  if (e || !r.ok) {
+    if (gen === Talk.gen) talkAbort(gen);
+    if (e instanceof AuthError) askPin({ title: '輸入 PIN 以對門口說話', submit: (pin) => Api.login(pin), done: () => toast('已登入，請再按住說話') });
+    else toast(e ? '連不到門鎖' : (r.message || '現在不能說話'));
+    return;
+  }
+  if (gen !== Talk.gen) { try { await Api.talkEnd(r.id); } catch (err) {} return; }   // 已經又按了一次
+  Talk.id = r.id;
+  if (!Talk.pressed) talkFinish();                   // 伺服器回來前就放開了：把存著的送出去再結束
+}
+async function talkMic() {
+  if (Talk.node) return true;
+  if (Talk.opening) return Talk.opening;
+  Talk.opening = (async () => {
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true,
+        noiseSuppression: true, autoGainControl: true } });
+    } catch (e) {
+      toast(e && e.name === 'NotAllowedError' ? '沒有麥克風權限：到瀏覽器的網站設定允許麥克風' : '無法使用麥克風');
+      return false;
+    }
+    const ctx = Listen.ctx = Listen.ctx || new (window.AudioContext || window.webkitAudioContext)();
+    ctx.resume();                                   // 麥克風開著時 Safari 允許 AudioContext 不經點擊啟動
+    Talk.stream = stream;
+    Talk.src = ctx.createMediaStreamSource(stream);
+    Talk.node = ctx.createScriptProcessor(2048, 1, 1);
+    Talk.node.onaudioprocess = (ev) => { if (Talk.rec) talkCapture(ev.inputBuffer.getChannelData(0), ctx.sampleRate); };
+    Talk.src.connect(Talk.node);
+    Talk.node.connect(ctx.destination);             // 不接到輸出的話有些瀏覽器不會呼叫 onaudioprocess（輸出是靜音）
+    return true;
+  })();
+  try { return await Talk.opening; } finally { Talk.opening = null; }
+}
+function talkCapture(x, rate) {
+  // 降取樣到 16 kHz：每個輸出樣本取對應區間的平均（簡單的低通，避免 48k → 16k 的疊頻）
+  const step = rate / TALK_RATE, out = new Int16Array(Math.ceil(x.length / step) + 1);
+  let n = 0, sum = 0;
+  for (let i = 0; i < x.length; i++) {
+    Talk.acc += x[i]; Talk.cnt++; sum += x[i] * x[i];
+    Talk.pos += 1;
+    if (Talk.pos >= step) {
+      Talk.pos -= step;
+      const v = Math.max(-1, Math.min(1, Talk.acc / Talk.cnt));
+      out[n++] = v < 0 ? v * 0x8000 : v * 0x7fff;
+      Talk.acc = 0; Talk.cnt = 0;
+    }
+  }
+  if (n) {
+    Talk.chunks.push(out.slice(0, n));
+    Talk.buffered += n;
+    while (Talk.buffered > TALK_RATE * 4 && Talk.chunks.length > 1) Talk.buffered -= Talk.chunks.shift().length;   // 伺服器一直沒回：只留最後 4 秒
+  }
+  paintLevel(Math.sqrt(sum / x.length) * 8, 'talkLvl');
+}
+function talkFlush() {
+  if (Talk.sending || !Talk.id || !Talk.chunks.length) return Talk.sending;
+  const len = Talk.chunks.reduce((a, c) => a + c.length, 0), pcm = new Int16Array(len);
+  let o = 0;
+  for (const c of Talk.chunks) { pcm.set(c, o); o += c.length; }
+  Talk.chunks = []; Talk.buffered = 0;
+  const id = Talk.id;
+  // 一次只送一段（不平行），順序不會亂；網路慢時下一段會自動變大
+  Talk.sending = Api.talkSend(id, pcm.buffer).then((r) => {
+    if (!r.ok && id === Talk.id) {                 // 伺服器那邊已結束（超過時間、太久沒聲音）
+      Talk.id = null; Talk.chunks = [];
+      toast(r.message || '說話已結束'); talkUp();
+    }
+  }).catch(() => {}).finally(() => { Talk.sending = null; });
+  return Talk.sending;
+}
+function talkUp() {
+  if (!Talk.pressed) return;
+  Talk.pressed = false;
+  Talk.rec = false;
+  if (DEMO) { clearInterval(Talk.demo); paintTalk(''); toast('示範模式不會真的送出聲音'); return; }
+  paintTalk('');
+  if (Talk.id) talkFinish();                         // 還沒拿到 id：talkOpen 拿到後會自己結束
+  talkKeepMic();
+}
+async function talkFinish() {
+  const id = Talk.id, gen = Talk.gen;
+  await Talk.sending;
+  await talkFlush();                               // 把最後一段送完再結束
+  if (Talk.id === id) Talk.id = null; else return;
+  if (gen === Talk.gen) clearInterval(Talk.timer); // 這段時間內又按下去了：計時器是新的那次在用
+  try { await Api.talkEnd(id); } catch (e) {}
+}
+const TALK_KEEP_MS = 60000;    // 放開後麥克風再留 1 分鐘：下次按下去不用重新開（iPhone 右上角橘點會亮著）
+function talkKeepMic() {
+  clearTimeout(Talk.keep);
+  Talk.keep = setTimeout(() => { if (!Talk.pressed) talkStopMic(); }, TALK_KEEP_MS);
+}
+function talkStopMic() {
+  clearTimeout(Talk.keep);
+  Talk.rec = false;
+  if (Talk.node) { Talk.node.onaudioprocess = null; try { Talk.node.disconnect(); Talk.src.disconnect(); } catch (e) {} }
+  Talk.node = Talk.src = null;
+  if (Talk.stream) Talk.stream.getTracks().forEach((t) => t.stop());
+  Talk.stream = null;
+  if (navigator.audioSession && !Talk.pressed) navigator.audioSession.type = Listen.on ? 'playback' : 'auto';
+}
+function talkAbort(gen) {                          // 沒辦法開始說話：按鈕馬上恢復（手指可能還按著）
+  if (gen !== Talk.gen) return;
+  Talk.pressed = false; Talk.rec = false;
+  clearInterval(Talk.timer);
+  Talk.chunks = [];
+  paintTalk('');
+  talkKeepMic();
+}
+function talkRelease() {                           // 離開門鎖頁、App 到背景：放開並馬上關麥克風
+  talkUp();
+  talkStopMic();
+}
+(() => {
+  const b = $('talkBtn');
+  b.addEventListener('pointerdown', (e) => {
+    if (e.button) return;
+    e.preventDefault();
+    try { b.setPointerCapture(e.pointerId); } catch (err) {}
+    talkDown();
+  });
+  ['pointerup', 'pointercancel', 'lostpointercapture'].forEach((t) => b.addEventListener(t, talkUp));
+  b.addEventListener('contextmenu', (e) => e.preventDefault());       // 長按不要跳出選單
+  // iPhone 的長按手勢（放大鏡、選取、儲存影像）是從 touchstart 開始判斷的：這裡擋掉，pointer 事件照常會來
+  b.addEventListener('touchstart', (e) => { if (e.cancelable) e.preventDefault(); }, { passive: false });
+  b.closest('.cam').addEventListener('contextmenu', (e) => e.preventDefault());
+  b.addEventListener('keydown', (e) => { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); talkDown(); } });
+  b.addEventListener('keyup', (e) => { if (e.key === ' ' || e.key === 'Enter') talkUp(); });
+  b.addEventListener('blur', talkUp);
+})();
 
 /* =========================================================
    需要登入的頁面
@@ -970,7 +1172,7 @@ const HIDE_IN_ALL = ['face_passed', 'stranger_detected', 'gesture_cancel', 'info
 const KIND_CLASS = { unlock: 'unlock', lock: 'lock', guest_detected: 'guest', sentinel_saved: 'sentinel',
   door_failed: 'alert', pin_rejected: 'alert', gesture_timeout: 'alert', pin_changed: 'lock', role_changed: 'lock', member_deleted: 'alert',
   impostor_reported: 'alert', impostor_undone: 'lock', threshold_reset: 'lock', gesture_wrong: 'alert', gesture_changed: 'lock',
-  intercom_reply: 'talk', intercom_listen: 'talk' };
+  intercom_reply: 'talk', intercom_listen: 'talk', intercom_talk: 'talk' };
 let filter = 0, events = [], lastEventId = null, tlMore = false;
 
 function dayLabel(t) {
@@ -1327,5 +1529,5 @@ async function poll() {
   go(start, false);
   poll();
   setInterval(() => { if (!document.hidden) poll(); }, 1000);
-  document.addEventListener('visibilitychange', () => { setLive(!document.hidden && page === 0); if (document.hidden) listenStop(); });
+  document.addEventListener('visibilitychange', () => { setLive(!document.hidden && page === 0); if (document.hidden) { listenStop(); talkRelease(); } });
 })();

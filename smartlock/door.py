@@ -30,6 +30,8 @@ log = logging.getLogger(__name__)
 
 NO_FACE = '無人臉'
 MULTI_FACE = '多人入鏡，暫不自動解鎖'
+MOTION_SIZE = (160, 120)               # 移動偵測用的小圖（比對一次約 0.2 ms）
+MOTION_DIFF = 25                       # 灰階差超過這個才算這個像素有變（濾掉雜訊）
 
 
 class DoorSystem:
@@ -59,7 +61,7 @@ class DoorSystem:
                       'require_gesture': cfg.require_gesture, 'phase': 'face', 'countdown': None,
                       'gesture': None, 'gesture_score': None, 'target': None, 'target_bound': False,
                       'visitor': None, 'visitor_since': None,
-                      'allowed': cfg.gesture_labels()}
+                      'allowed': cfg.gesture_labels(), 'idle': False}
 
         # ---- 狀態機內部狀態 ----
         self._candidate = None               # 目前連續被認出的 master 編號
@@ -85,6 +87,10 @@ class DoorSystem:
         self._v_streak = 0
         self._v_seen = 0.0
         self._v_notified = set()
+        self._active_until = 0.0             # 省電：這個時間之前每幀都找人臉（看到臉或畫面在動就往後延）
+        self._next_check = 0.0               # 省電時下一次找人臉的時間
+        self._prev_small = None              # 上一幀的小灰階圖（移動偵測）
+        self.idle = False
 
     # ==========================================
     # 狀態、事件
@@ -144,6 +150,8 @@ class DoorSystem:
         now = self.clock()
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = self.recognizer.identify(gray)
+        if faces:
+            self._active_until = now + cfg.idle_after
 
         accepted, name, category, best, guest_label = None, NO_FACE, '', None, None
         for f in faces:
@@ -192,6 +200,45 @@ class DoorSystem:
                     gesture_score=None if hide or g_score is None else round(float(g_score), 2),
                     countdown=round(max(0.0, self._deadline - now), 1) if self._phase == 'gesture' else None)
         return frame
+
+    # ==========================================
+    # 省電：沒人、畫面沒動時少找幾次人臉
+    # ==========================================
+    def step(self, frame):
+        """背景迴圈每幀呼叫：需要時才辨識（process_frame），省電中只把畫面交給 frame_hooks（哨兵的預錄緩衝）。"""
+        now = self.clock()
+        if self._wants_detection(frame, now):
+            return self.process_frame(frame)
+        for hook in self.frame_hooks:
+            try:
+                hook(frame, [], now)
+            except Exception:
+                log.exception('frame hook 失敗')
+        return frame
+
+    def _moving(self, frame) -> bool:
+        small = cv2.GaussianBlur(cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), MOTION_SIZE), (5, 5), 0)
+        prev, self._prev_small = self._prev_small, small
+        if prev is None:
+            return True
+        _, diff = cv2.threshold(cv2.absdiff(small, prev), MOTION_DIFF, 255, cv2.THRESH_BINARY)
+        return cv2.countNonZero(diff) >= self.cfg.motion_ratio * small.size
+
+    def _wants_detection(self, frame, now) -> bool:
+        cfg = self.cfg
+        if cfg.idle_after <= 0 or cfg.idle_fps <= 0:
+            return True
+        if self._moving(frame):
+            self._active_until = now + cfg.idle_after
+        idle = self._phase == 'face' and now >= self._active_until
+        if idle != self.idle:
+            self.idle = idle
+            self.update(idle=idle)
+            log.debug('省電：%s', f'沒有動靜，每秒找 {cfg.idle_fps:g} 次人臉' if idle else '有動靜，恢復每幀辨識')
+        if not idle or now >= self._next_check:
+            self._next_check = now + 1.0 / cfg.idle_fps
+            return True
+        return False
 
     def _track_visitor(self, guest_label, name, now):
         """訪客：連續認出 required_frames 幀就通知一次；離開 rearm_seconds 秒後可再通知。"""
@@ -299,7 +346,7 @@ class DoorSystem:
                 frame = reader.read()
                 if frame is None:
                     continue
-                self.process_frame(frame)
+                self.step(frame)
                 ok, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 if ok:
                     with self.guard:

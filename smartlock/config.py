@@ -48,6 +48,9 @@ class Config:
     rearm_seconds: float = 3.0                    # 人離開鏡頭幾秒後才允許再次自動開鎖
     report_margin: float = 3.0                    # 回報誤認後，門檻比最像的冒充者再嚴格多少（SFace 距離）
     report_floor: float = 35.0                    # 門檻最低收到這裡（cosine 0.65）；再低本人也常過不了，應該重拍
+    idle_after: float = 3.0                       # 沒看到臉、畫面也沒動幾秒後省電：找人臉降到 idle_fps（0 = 一直全速）
+    idle_fps: float = 2.0                         # 省電時每秒找幾次人臉（Pi 5 找一次約 70 ms、吃滿 4 核心）
+    motion_ratio: float = 0.01                    # 畫面有多少比例在變就算有動靜，馬上恢復全速
 
     # ---- Arduino ----
     arduino_port: Optional[str] = None            # None = 自動尋找
@@ -80,6 +83,9 @@ class Config:
     kiosk: bool = False
     control_pin: str = ''
     public_url: str = ''
+    web_https: bool = True                        # 自簽憑證 HTTPS（手機用麥克風對門口講話一定要 HTTPS）；同一個埠的 http 會轉到 https
+    tls_cert: Optional[Path] = None               # None = 專案資料夾/certs/smartlock.crt（沒有就自動產生）
+    tls_key: Optional[Path] = None
     simulate: bool = False                        # True = 不接 Arduino，用文字模擬
 
     # ---- 哨兵（陌生人錄影） ----
@@ -109,10 +115,19 @@ class Config:
     # ---- 對講機 ----
     intercom: str = 'auto'                        # auto（有 USB 音效卡就啟用）| 1 | 0 | sim（Mac 開發用測試音）
     audio_device: str = ''                        # 例如 plughw:2,0；空白 = 自動找 USB 音效卡
-    intercom_channel: str = 'left'                # 預錄語音從哪個聲道播：left（門外）| right（室內）| both
+    intercom_channel: str = 'both'                # 對講聲音（說話、預錄）從哪個聲道播：both（兩邊都響）| left（門外）| right（室內）
     speaker_volume: int = 100                     # 啟動時把 USB 卡喇叭音量設成幾 %（這張卡預設 62% 幾乎沒聲音）
+    talk_max_seconds: float = 120.0               # 按住說話單次最長秒數
 
     # ---- 路徑 ----
+    @property
+    def cert_file(self) -> Path:
+        return Path(self.tls_cert) if self.tls_cert else self.base / 'certs' / 'smartlock.crt'
+
+    @property
+    def key_file(self) -> Path:
+        return Path(self.tls_key) if self.tls_key else self.base / 'certs' / 'smartlock.key'
+
     @property
     def gestures_file(self) -> Path:
         return self.base / 'gestures.json'
@@ -177,6 +192,9 @@ class Config:
             face_score=float(env.get('FACE_SCORE', 0.6)),
             report_margin=float(env.get('FACE_REPORT_MARGIN', 3)),
             report_floor=float(env.get('FACE_REPORT_FLOOR', 35)),
+            idle_after=float(env.get('IDLE_AFTER', 3)),
+            idle_fps=float(env.get('IDLE_FPS', 2)),
+            motion_ratio=float(env.get('MOTION_RATIO', 0.01)),
             arduino_port=env.get('ARDUINO_PORT') or None,
             baud=int(env.get('ARDUINO_BAUD', 9600)),
             cmd_unlock=env.get('CMD_UNLOCK', 'unlock'),
@@ -197,6 +215,9 @@ class Config:
             kiosk=_flag(env, 'KIOSK', '0'),
             control_pin=env.get('CONTROL_PIN', ''),
             public_url=env.get('PUBLIC_URL', ''),
+            web_https=_flag(env, 'WEB_HTTPS', '1'),
+            tls_cert=Path(env['TLS_CERT']) if env.get('TLS_CERT') else None,
+            tls_key=Path(env['TLS_KEY']) if env.get('TLS_KEY') else None,
             simulate=_flag(env, 'SIM_ARDUINO', '0'),
             sentinel=_flag(env, 'SENTINEL', '1'),
             sentinel_trigger=float(env.get('SENTINEL_TRIGGER', 5)),
@@ -218,6 +239,7 @@ class Config:
             line_cooldown=float(env.get('LINE_COOLDOWN', 300)),
             intercom=env.get('INTERCOM', 'auto'),
             audio_device=env.get('AUDIO_DEVICE', ''),
-            intercom_channel=env.get('INTERCOM_CHANNEL', 'left'),
+            intercom_channel=env.get('INTERCOM_CHANNEL', 'both'),
             speaker_volume=max(0, min(100, int(env.get('SPEAKER_VOLUME', 100)))),
+            talk_max_seconds=float(env.get('TALK_MAX_SECONDS', 120)),
         )

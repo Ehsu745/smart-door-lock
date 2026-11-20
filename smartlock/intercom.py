@@ -1,4 +1,4 @@
-"""對講機（階段 1、2）：手機聽門口聲音、按鈕播放預錄語音。
+"""對講機：手機聽門口聲音、按住說話（門外喇叭播出）、按鈕播放預錄語音。
 
 硬體：Waveshare USB TO AUDIO（Pi 上顯示為「USB PnP Audio Device」，內建 2 顆麥克風）＋兩顆喇叭，
 左聲道接門外、右聲道接室內。用系統的 arecord / aplay（alsa-utils，Pi OS 內建），不需要額外的 Python 套件。
@@ -6,12 +6,15 @@
 - 收音：有人在聽才開麥克風（arecord），最後一個人離開就關掉；每個聽眾一個佇列，慢的聽眾丟最舊的資料
 - 播放：sounds/*.wav（16-bit PCM），檔名就是按鈕文字（開頭的「01 」之類的編號會拿掉、用來排序）；
   預設只從左聲道（門外）播；同一時間只播一段
+- 按住說話（半雙工）：手機麥克風 → 16 kHz 單聲道 PCM 分段 POST 上來 → aplay 串流播出；
+  說話時門口麥克風不送給聽眾（不會聽到自己的回音）；同一時間只有一支手機能說話，也不能和預錄語音同時播
 - 模擬（INTERCOM=sim，Mac 開發用）：麥克風送輕微的測試音，播放只寫 log（Mac 有 afplay 就真的播）
 """
 from __future__ import annotations
 
 import logging
 import re
+import secrets
 import shutil
 import subprocess
 import threading
@@ -31,6 +34,8 @@ LISTENER_QUEUE = 30                # 每個聽眾最多累積 3 秒，再慢就�
 LISTEN_EVENT_GAP = 900.0           # 同一支手機 15 分鐘內重新連線（串流 10 分鐘會換一條）不重複記「開始聆聽」
 MAX_CLIP_SECONDS = 30.0
 CHANNELS = ('left', 'right', 'both')
+TALK_IDLE = 2.0                    # 說話中超過 2 秒沒收到聲音（手機斷線、切到背景）就自動結束
+TALK_MAX_BYTES = RATE * 2 * 5      # 單次上傳最多 5 秒的聲音
 _LABEL_PREFIX = re.compile(r'^\d+[\s._-]*')
 
 
@@ -158,6 +163,28 @@ class AlsaSpeaker:
         subprocess.run(['aplay', '-q', '-D', self.device, '-f', 'S16_LE', '-r', str(rate), '-c', '2', '-t', 'raw'],
                        input=pcm, stderr=subprocess.DEVNULL, timeout=MAX_CLIP_SECONDS + 10)
 
+    def stream(self, rate: int):
+        return AlsaStream(self.device, rate)
+
+
+class AlsaStream:
+    """按住說話：開一個 aplay，聲音一段一段寫進 stdin。aplay 自己有 0.4 秒緩衝，網路抖動時斷音會自動接回。"""
+
+    def __init__(self, device, rate):
+        self.proc = subprocess.Popen(['aplay', '-q', '-D', device, '-f', 'S16_LE', '-r', str(rate), '-c', '2',
+                                      '-t', 'raw', '--buffer-time=400000'],
+                                     stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+    def write(self, pcm: bytes):
+        self.proc.stdin.write(pcm)
+
+    def close(self):
+        try:
+            self.proc.stdin.close()                 # EOF：aplay 把剩下的播完才結束
+            self.proc.wait(timeout=3)
+        except (OSError, subprocess.TimeoutExpired):
+            self.proc.kill()
+
 
 class SimMic:
     """模擬麥克風：輕微雜訊，每 2 秒一聲短嗶，確認手機端有在播。照實際時間送出。"""
@@ -200,18 +227,45 @@ class SimSpeaker:
         else:
             time.sleep(len(stereo) / rate)
 
+    def stream(self, rate: int):
+        return SimStream(self, rate)
+
+
+class SimStream:
+    """Mac 模擬：說完（放開按鈕）才一次播出來。"""
+
+    def __init__(self, speaker, rate):
+        self.speaker, self.rate, self.buf = speaker, rate, bytearray()
+
+    def write(self, pcm: bytes):
+        self.buf += pcm
+
+    def close(self):
+        if self.buf:
+            self.speaker.play(bytes(self.buf), self.rate)
+
+
+class TalkSession:
+    def __init__(self, ip, now):
+        self.id = secrets.token_urlsafe(12)
+        self.ip = ip
+        self.started = self.last = now
+        self.queue = Queue()
+        self.bytes = 0
+        self.ended = False
+
 
 # ==========================================
 # 對講機
 # ==========================================
 class Intercom:
-    def __init__(self, sounds_dir: Path, bus=None, mic_factory=None, speaker=None, channel='left',
+    def __init__(self, sounds_dir: Path, bus=None, mic_factory=None, speaker=None, channel='both',
                  clock=time.monotonic, name=''):
         self.sounds_dir = Path(sounds_dir)
         self.bus = bus
         self.mic_factory = mic_factory          # None = 沒有麥克風（只能播放或完全停用）
         self.speaker = speaker
-        self.channel = channel if channel in CHANNELS else 'left'
+        self.channel = channel if channel in CHANNELS else 'both'
         self.clock = clock
         self.name = name                        # 裝置名稱，顯示在設定頁
         self._listeners = []
@@ -220,6 +274,9 @@ class Intercom:
         self._mic_busy = threading.Lock()       # 同一時間只開一個 arecord（音效卡是獨占的）
         self._last_listen = {}                  # ip → 上次記「開始聆聽」的時間
         self.playing = None                     # 正在播的語音（文字）
+        self.talk_max = 120.0                   # 按住說話單次最長秒數
+        self._talk = None                       # 正在說話的手機（TalkSession）
+        self._speaker_busy = threading.Lock()   # 音效卡是獨占的：上一次說話的 aplay 還在播完尾巴時，下一次要等
 
     @property
     def can_listen(self) -> bool:
@@ -229,10 +286,19 @@ class Intercom:
     def can_play(self) -> bool:
         return self.speaker is not None
 
+    @property
+    def can_talk(self) -> bool:
+        return self.speaker is not None and hasattr(self.speaker, 'stream')
+
+    @property
+    def talking(self) -> bool:
+        return self._talk is not None
+
     def status(self) -> dict:
         with self._lock:
             listeners = len(self._listeners)
-        return {'listen': self.can_listen, 'reply': self.can_play, 'playing': self.playing, 'listeners': listeners}
+        return {'listen': self.can_listen, 'reply': self.can_play, 'talk': self.can_talk, 'talking': self.talking,
+                'playing': self.playing, 'listeners': listeners}
 
     def _emit(self, kind, text, **data):
         if self.bus is not None:
@@ -277,6 +343,8 @@ class Intercom:
                 if not data:
                     log.warning('對講機：麥克風沒有資料（音效卡被拔掉或被占用？）')
                     break
+                if self._talk is not None:         # 半雙工：手機說話時不送門口的聲音（不然會聽到自己的回音）
+                    continue
                 for q in listeners:
                     _offer(q, data)
         except Exception:
@@ -312,6 +380,8 @@ class Intercom:
         with self._lock:
             if self.playing:
                 return False, f'正在播放「{self.playing}」'
+            if self._talk is not None:
+                return False, '有人正在對門口說話'
             self.playing = label
         self._emit('intercom_reply', f'門口播放：{label}（{ip}）', remote=ip, clip=clip_id)
         threading.Thread(target=self._play, args=(to_stereo(mono, self.channel), rate),
@@ -326,6 +396,87 @@ class Intercom:
         finally:
             with self._lock:
                 self.playing = None
+
+
+    # ---------- 按住說話 ----------
+    def talk_start(self, ip=''):
+        """開始說話，回傳 (成功, 訊息, session id)。"""
+        if not self.can_talk:
+            return False, '沒有喇叭', None
+        with self._lock:
+            if self.playing:
+                return False, f'正在播放「{self.playing}」', None
+            if self._talk is not None:
+                if self._talk.ip != ip:
+                    return False, '另一支手機正在說話', None
+                self._talk.queue.put(None)         # 同一支手機重按（上一次沒收到放開）：結束舊的
+                self._talk.ended = True
+                self._talk = None
+            t = self._talk = TalkSession(ip, self.clock())
+        threading.Thread(target=self._talk_loop, args=(t,), daemon=True, name='intercom-talk').start()
+        return True, '說話中', t.id
+
+    def talk_feed(self, tid, pcm: bytes):
+        """收到一段手機的聲音（16 kHz 單聲道 S16LE）。回傳 (成功, 訊息)；失敗代表這次說話已結束。"""
+        with self._lock:
+            t = self._talk
+            if t is None or t.id != tid or t.ended:
+                return False, '說話已結束'
+            now = self.clock()
+            if now - t.started > self.talk_max:
+                t.ended = True
+                t.queue.put(None)
+                return False, f'單次說話最長 {self.talk_max:.0f} 秒'
+            t.last = now
+        if len(pcm) % 2:
+            pcm = pcm[:-1]
+        if pcm:
+            t.bytes += len(pcm)
+            t.queue.put(pcm)
+        return True, ''
+
+    def talk_end(self, tid):
+        with self._lock:
+            t = self._talk
+            if t is None or t.id != tid:
+                return False
+            t.ended = True
+        t.queue.put(None)
+        return True
+
+    def _talk_loop(self, t):
+        stream = None
+        self._speaker_busy.acquire()
+        try:
+            stream = self.speaker.stream(RATE)
+            while True:
+                try:
+                    pcm = t.queue.get(timeout=0.5)
+                except Empty:
+                    if self.clock() - t.last > TALK_IDLE:
+                        log.info('對講機：%.0f 秒沒收到聲音，結束說話', TALK_IDLE)
+                        break
+                    continue
+                if pcm is None:
+                    break
+                stream.write(to_stereo(np.frombuffer(pcm, '<i2'), self.channel))
+        except Exception:
+            log.exception('對講機說話播放錯誤')
+        finally:
+            t.ended = True
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    log.exception('對講機：關閉喇叭串流錯誤')
+            self._speaker_busy.release()
+            with self._lock:
+                if self._talk is t:
+                    self._talk = None
+            secs = t.bytes / 2 / RATE
+            if secs > 0:
+                self._emit('intercom_talk', f'手機對門口說話 {secs:.0f} 秒（{t.ip}）', remote=t.ip,
+                           seconds=round(secs, 1))
 
 
 def _offer(q, item):
@@ -348,7 +499,9 @@ def make_intercom(cfg, bus=None):
         return None
     sounds = cfg.sounds_dir
     if mode == 'sim':
-        return Intercom(sounds, bus, SimMic, SimSpeaker(), cfg.intercom_channel, name='模擬（測試音）')
+        ic = Intercom(sounds, bus, SimMic, SimSpeaker(), cfg.intercom_channel, name='模擬（測試音）')
+        ic.talk_max = cfg.talk_max_seconds
+        return ic
     if cfg.audio_device:
         rec = play = cfg.audio_device
     else:
@@ -361,6 +514,7 @@ def make_intercom(cfg, bus=None):
         set_speaker_volume(play, cfg.speaker_volume)
     ic = Intercom(sounds, bus, (lambda: AlsaMic(rec)) if rec else None, AlsaSpeaker(play) if play else None,
                   cfg.intercom_channel, name=rec or play)
+    ic.talk_max = cfg.talk_max_seconds
     log.info('對講機：收音 %s、播放 %s（%s聲道）；語音 %d 段（%s）', rec or '無', play or '無',
              {'left': '左', 'right': '右', 'both': '雙'}[ic.channel], len(ic.clips()), sounds)
     return ic

@@ -116,11 +116,11 @@ bash deploy/install_service.sh --desktop # 登入桌面後在 Pi 螢幕顯示視
 - 額度剩 20 則以下只發「訪客」和「開鎖失敗」；用完就暫停。通知只有文字，**不放開鎖連結**。
 - 在背景執行緒發送，LINE 連不上不影響門鎖；失敗原因會顯示在手機「設定」的 LINE 區塊。
 
-## 對講機（聽門口、預錄回覆）
+## 對講機（聽門口、按住說話、預錄回覆）
 
 硬體：Waveshare「USB TO AUDIO」免驅動音效卡（內建 2 顆麥克風，Pi 上顯示為「USB PnP Audio Device」）＋兩顆喇叭。
 喇叭接在卡上標著 `VORN / VORP / VOLP / VOLN` 的 4-pin 插座，成套的喇叭是一個插頭直接插上，不用自己接線。
-**左聲道（`VOLP/VOLN`）接門外喇叭、右聲道（`VORP/VORN`）接室內**（`test-audio` 先響的那顆是左聲道）；自己接線的話，BTL 輸出的 N 不是地線，不能接 GND、兩聲道負端不能並在一起。
+**左聲道（`VOLP/VOLN`）接門外喇叭、右聲道（`VORP/VORN`）接室內**（`test-audio` 先響的那顆是左聲道）。說話、預錄預設**兩顆喇叭一起響**（`INTERCOM_CHANNEL=both`），只要門外響就設 `left`；自己接線的話，BTL 輸出的 N 不是地線，不能接 GND、兩聲道負端不能並在一起。
 
 1. 插上音效卡，`python app.py test-audio`：自動找卡 → 喇叭音量設 100% → 錄 5 秒 → 左、右聲道各播一次 → 印音量與 `vcgencmd get_throttled`（不是 `0x0` = 欠壓）
    - 喇叭完全沒聲音：這張卡在 Linux 上的音量刻度不對（`dmesg` 會有「cval->res is probably wrong」），預設 62% 實際幾乎是靜音；程式啟動時會自動設成 100%（`SPEAKER_VOLUME` 可改），手動測試前用 `amixer -c 卡號 sset Speaker 100%`
@@ -128,14 +128,35 @@ bash deploy/install_service.sh --desktop # 登入桌面後在 Pi 螢幕顯示視
    - 找不到卡或「Device or resource busy」：`arecord -l` 看卡號，在 `smartlock.env` 設 `AUDIO_DEVICE=plughw:卡號,0`（被 PipeWire 占用時改 `AUDIO_DEVICE=default`）
 2. 預錄語音：在 Mac 上 `python tools/make_sounds.py` 產生三段預設語音（macOS 中文語音「美佳」），再 `rsync -av sounds/ pi:door_pi_gesture/sounds/`。
    **檔名就是按鈕上的字**，開頭的編號用來排序（`01 請稍候，馬上來.wav`）；格式 16-bit PCM WAV、最長 30 秒；想用自己的聲音就錄好用同名檔蓋掉，不用重新啟動
-3. 啟動門鎖後，手機門鎖頁的影像右下角會出現「聆聽」「回覆」（沒有音效卡就不顯示）
+3. 啟動門鎖後，手機門鎖頁的影像右下角會出現「聆聽」「按住說話」「預錄」（沒有音效卡就不顯示）
 
 - **聆聽**：有人在聽才開麥克風，最後一支手機停止就關掉；同一支手機只留一條、最多 4 條、10 分鐘換新（跟影像串流同一套規則）；手機落後超過 1 秒會丟掉舊的聲音，延遲維持在約 0.3 秒。離開門鎖頁、切到背景就停止
-- **回覆**：從門外喇叭（左聲道，`INTERCOM_CHANNEL` 可改）播放，同一時間只播一段
-- 聆聽跟影像一樣不用 PIN（同一個網路的人都聽得到）；回覆要登入（PIN）。時間軸會記「手機開始聆聽門口」（同一支手機 15 分鐘內只記一次）和「門口播放：…」
+- **按住說話**（像對講機，半雙工）：按住講、放開聽。按下時自動開始聆聽，放開就聽得到對方回答；麥克風和 Pi 的準備同時進行，Pi 還沒好之前講的話先存著（開頭不會被吃掉）；放開後麥克風留 1 分鐘（iPhone 右上角橘點），下次按下馬上能講，離開門鎖頁或切到背景就關；說話時門口麥克風不送回手機（不會聽到自己的回音）。從喇叭播出（預設兩邊都響），延遲約 0.5 秒；同一時間只有一支手機能說話，也不能和預錄語音同時播；單次最長 `TALK_MAX_SECONDS`（120 秒）。要登入（PIN），時間軸記「手機對門口說話 N 秒」。**需要 HTTPS**（見下方）
+- **預錄**：從喇叭播放（預設兩邊都響，`INTERCOM_CHANNEL` 可改成只有 `left` 門外 / `right` 室內），同一時間只播一段
+- 聆聽跟影像一樣不用 PIN（同一個網路的人都聽得到）；說話、預錄要登入（PIN）。時間軸會記「手機開始聆聽門口」（同一支手機 15 分鐘內只記一次）和「門口播放：…」
 - iPhone 靜音開關打開時，Safari 16.4 以上仍會出聲（`navigator.audioSession`）；更舊的版本要關掉靜音開關
-- 只用 HTTP 就能做；手機對門口講話要用麥克風，瀏覽器規定要 HTTPS，之後再做
-- Mac 開發：`INTERCOM=sim python app.py run --sim`（麥克風改成每 2 秒一聲嗶，回覆用 afplay 播）
+- Mac 開發：`INTERCOM=sim python app.py run --sim`（麥克風改成每 2 秒一聲嗶，預錄用 afplay 播；按住說話放開後才一次播出）
+
+### HTTPS（按住說話需要）
+
+瀏覽器只允許 HTTPS 網頁使用麥克風。門鎖在區網裡沒有網域名稱，所以用**自簽憑證**：
+
+- 第一次啟動自動用 `openssl` 產生 `certs/smartlock.crt`、`smartlock.key`（不進 git、825 天、快過期會自動換），之後沿用同一張，手機不用重新信任
+- 網址變成 `https://<IP>:5050`（QR code 也是）；**同一個埠打 `http://` 會自動轉到 `https://`**，舊書籤照樣能用。Pi 本機的 `curl localhost:5050/api/health` 不轉，排查不受影響
+- 每支手機第一次開會說「連線不安全 / 不是私人連線」：iPhone Safari 點「顯示詳細資訊 → 瀏覽此網站」，Android Chrome 點「進階 → 繼續前往」。換 IP（熱點）後會再問一次
+- **LINE 內建瀏覽器不能略過這個警告**：右下角「⋯ → 用瀏覽器開啟」改用 Safari / Chrome；網頁不是 HTTPS 時按「說話」會跳出這段說明
+- 不想用 HTTPS：`smartlock.env` 設 `WEB_HTTPS=0`（只是不能按住說話，其他功能不變）；有自己的憑證：`TLS_CERT`、`TLS_KEY`
+- 不送 HSTS：自簽憑證加了 HSTS，瀏覽器就不再讓人按「仍要前往」
+
+## 省電（沒人時少找人臉）
+
+找人臉（YuNet）在 Pi 5 上一次約 70 ms、會吃滿 4 個核心；每幀都找的話門鎖程式約 350% CPU，沒裝好風扇時溫度會到 85°C 開始降頻，對講機也跟著卡。所以：
+
+- 鏡頭裡沒有臉、畫面也沒在動超過 `IDLE_AFTER`（3 秒）→ 每秒只找 `IDLE_FPS`（2）次
+- 每幀都做很便宜的移動偵測（160×120 灰階相減，約 0.2 ms）；畫面有 `MOTION_RATIO`（1%）以上在變 → 那一幀就找，恢復全速
+- 站著不動的人也會在下一次例行檢查（最多 0.5 秒）被看到；手勢階段、看得到臉時一律全速
+- 影像串流、哨兵預錄照常每幀處理；`/api/status` 的 `idle` 是目前是否省電中；`IDLE_AFTER=0` 關掉
+- Pi 5 實測（沒人時）：CPU 358% → 約 40%，溫度 82°C → 57°C，降頻解除
 
 ## 程式結構
 
@@ -148,11 +169,12 @@ smartlock/
   storage.py           SQLite 紀錄 + SD 卡容量管理 + 成員最近出現時間
   security.py          PIN 雜湊儲存、smartlock.env 載入
   line.py              LINE 額度查詢 + 通知（訪客、陌生人錄影、開鎖失敗；背景發送）
-  door.py              狀態機（人臉 → 手勢 → 開鎖），不碰硬體，可單獨測試
+  door.py              狀態機（人臉 → 手勢 → 開鎖）、省電（移動偵測），不碰硬體，可單獨測試
   face.py              人臉偵測（YuNet）、辨識（SFace）、採集、登錄、個人門檻與冒充者比對
   learning.py          回報誤認：嘗試紀錄、收緊門檻、冒充者、取消回報
   bindings.py          每個主人綁定的開鎖手勢（gestures.json，檔案改動自動重新讀取）
-  intercom.py          對講機：手機聽門口（arecord → raw PCM 串流）、播放預錄語音（aplay，分聲道）
+  intercom.py          對講機：手機聽門口（arecord → raw PCM 串流）、按住說話（aplay 串流）、播放預錄語音（aplay，分聲道）
+  tls.py               HTTPS：自簽憑證（openssl）、同一個埠接 http / https
   gesture.py           MediaPipe 手勢（含備援規則）
   arduino.py           序列埠協定（+ 模擬 Arduino）
   camera.py            rpicam / Picamera2 / USB 相機
@@ -160,7 +182,7 @@ smartlock/
   qr.py                控制頁 QR code
   web/                 Flask API + 單頁 App（templates/index.html、static/app.js、app.css）
   cli.py               指令列與選單
-tests/                 183 個自動測試，不需要相機或 Arduino
+tests/                 216 個自動測試，不需要相機或 Arduino
 deploy/                systemd 服務與安裝腳本
 arduino/door_lock/     學弟的 Arduino sketch
 ```

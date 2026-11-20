@@ -25,7 +25,7 @@ def lan_ip() -> str:
 
 
 def control_url(cfg: Config) -> str:
-    return cfg.public_url or f'http://{lan_ip()}:{cfg.web_port}'
+    return cfg.public_url or f"{'https' if cfg.web_https else 'http'}://{lan_ip()}:{cfg.web_port}"
 
 
 def qr_matrix(text):
