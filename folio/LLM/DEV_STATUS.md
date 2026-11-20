@@ -34,14 +34,15 @@ sticker: lucide//activity
 >     - [ ] **手勢綁定**：eric、jenny 都還沒綁；Pi 上實測、iPhone / LINE 內建瀏覽器滾輪手感（Group C）
 >     - [ ] **check-face / 補拍**：相機裝好就跑（Group D）
 >     - [/] **對講機**：硬體通了；剩門口 1 m 收音、LINE 內建瀏覽器、重插後自動音量、聆聽免 PIN 手機實測（Group E、G）
->     - [ ] **正式模式**：systemd、網頁刪除成員耗時、LINE 真實發送（Group F）；Arduino 等裝門鎖，之前用 `--sim`
->     - [ ] **按住說話 + HTTPS（v2.11，`feat/https-talk`）**：他們要求對講以對話為主；Pi 自簽憑證、半雙工。Mac 測過，Pi 5 + iPhone 待測（Group H）
+>     - [ ] **正式模式**：systemd、網頁刪除成員耗時、LINE 真實發送（Group F）；Arduino 已通（F1），裝門鎖前照用 `--sim`
+>     - [/] **按住說話 + HTTPS（v2.11，`feat/https-talk`，PR #6 draft）**：Pi 5 + iPhone 通過 H1～H4、H8、H9（11-20）；剩兩顆喇叭（H10）、兩支手機、LINE、Android；11-20 的修改已推上 PR #6（Group H）
 > - [x] **成員權限**：Pi 上 jenny 是 master、eric 是 guest，使用者確認維持不變（11-17）
 
 ---
 ### 🔩 [HW] 硬體
 > [!todo]- 3 open
-> - [-] **Arduino 連不上（暫緩到裝門鎖）**：11/04、11/17（Pi 5）`lsusb` 都看不到 UNO、`dmesg` 沒有插入紀錄。Arduino 開關鎖之前 demo 已測過；裝門鎖前一律用 `--sim`，裝鎖時再查 USB 線是不是資料線、換孔
+> - [x] **Arduino 連上了（11-20）**：重新插好後 Pi 5 認得 UNO（`/dev/ttyACM0`、9600），`serial_diag.py`、`test-arduino` 都通過；步驟寫進 `指令速查.md`。裝門鎖前照用 `--sim`
+> - [x] **Pi 5 風扇接觸不良（11-20）**：系統要全速但 0 RPM、84°C 降頻 → 喬好排線約 10,000 RPM
 > - [ ] **鎖的種類**：fail-secure / fail-safe、繼電器 NO / NC 還沒確認（[[提高可靠度]]）
 > - [ ] **喇叭**：品牌型號與阻抗（4 Ω / 8 Ω）看背面標示（[[對講機]]）
 > - [ ] **Pi 4 沒有 USB 鏡頭、沒接音效卡**
@@ -62,7 +63,7 @@ sticker: lucide//activity
 > - [ ] **活體偵測**：先做軟體（防偽模型、眨眼），用攻擊測試數據決定要不要買 ToF / IR（[[提高可靠度]]）
 > - [ ] **對講機階段 3：門鈴**（[[對講機]]）
 > - [>] **對講機階段 4：手機對門口講話**：v2.11 做完（自簽憑證，不用 Tailscale），等 Pi 5 測試（[[Test Queue]] H）
-> - [ ] **軟體移動偵測 + 效能量測**：優化規劃第 5 項，改前改後量 CPU 與溫度放進報告
+> - [/] **軟體移動偵測 + 效能量測**：省電模式做完（`feat/https-talk`）：沒人時 358% → 約 40% CPU、82°C → 57°C；門口有人走動時的恢復速度還沒實測
 
 ---
 ### 🧹 [MISC] 雜項
