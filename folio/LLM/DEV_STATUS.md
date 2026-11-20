@@ -27,7 +27,7 @@ sticker: lucide//activity
 >     - [ ] **check-face / 補拍**：相機裝好就跑（Group D）
 >     - [/] **對講機**：硬體通了；剩門口 1 m 收音、LINE 內建瀏覽器、重插後自動音量、聆聽免 PIN 手機實測（Group E、G）
 >     - [ ] **正式模式**：systemd、網頁刪除成員耗時、LINE 真實發送（Group F）；Arduino 已通（F1），裝門鎖前照用 `--sim`
->     - [/] **按住說話 + HTTPS（v2.11，`feat/https-talk`，PR #6 draft）**：Pi 5 + iPhone 通過 H1～H4、H8、H9（11-20）；剩兩顆喇叭（H10）、兩支手機、LINE、Android；11-20 的修改已推上 PR #6（Group H）
+>     - [/] **按住說話 + HTTPS（v2.11，`feat/https-talk`，PR #6 draft）**：Pi 5 + iPhone 通過 H1～H4、H8、H9（11-20）；H1～H10 全部通過，可以合併；11-20 的修改已推上 PR #6（Group H）
 > - [x] **成員權限**：Pi 上 jenny 是 master、eric 是 guest，使用者確認維持不變（11-17）
 
 ---

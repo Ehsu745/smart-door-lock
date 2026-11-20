@@ -14,7 +14,7 @@ Test checklists, one group per branch or batch of work, in the order it was done
 | D | v2.9 check-face / 補拍 | smart-door-lock | main | merged，Pi 5 已部署，等相機裝上門框 |
 | E | v2.10 對講機階段 1、2 | smart-door-lock | main | merged，Pi 5 部分測過（E1、E2、E4） |
 | F | 正式模式與部署 | smart-door-lock | main | F1 Arduino 通過（11-20）；F2～ 待測 |
-| H | v2.11 按住說話 + HTTPS、省電 | smart-door-lock | `feat/https-talk` | PR #6（draft）；Pi 5 + iPhone H1～H4、H8、H9 通過，剩 H5～H7、H10 |
+| H | v2.11 按住說話 + HTTPS、省電 | smart-door-lock | `feat/https-talk` | PR #6（draft）；Pi 5 + iPhone H1～H4、H8、H9 通過，H1～H10 全部通過 |
 | G | 對講機喇叭音量、聆聽免 PIN | smart-door-lock | `fix/intercom-volume`、`feat/listen-without-pin` | merged `e642f8c`，Pi 5 部分測過（G1） |
 
 ## 2026-11-16 · Pi 5 驗收（[[Plan]] Phase 1）
@@ -127,17 +127,22 @@ Test checklists, one group per branch or batch of work, in the order it was done
 > - [x] **H4 iOS 說完之後聆聽音量**
 >     - Expect：放開後聆聽的音量和說話前差不多（沒有被切到聽筒）；靜音開關打開也有聲音
 >     - > 使用者（2026-11-20）：可以（麥克風留著的 1 分鐘內也正常）
-> - [ ] **H5 兩支手機**：一支說話時另一支按
+> - [x] **H5 兩支手機**：一支說話時另一支按
 >     - Expect：另一支顯示「另一支手機正在說話」；預錄也不能同時播
-> - [ ] **H6 LINE 內建瀏覽器**
+>     - > 使用者（2026-11-20）：pass
+> - [x] **H6 LINE 內建瀏覽器**
 >     - Expect：打不開或按「說話」跳出說明，照說明改用 Safari 能用
-> - [ ] **H7 Android Chrome**（有的話）
+>     - > 使用者（2026-11-20）：LINE 裡顯示「無法開啟頁面」（自簽憑證不能略過，網頁的說明也看不到）；「⋯ → 用預設瀏覽器開啟」可以
+>     - > 使用者（2026-11-20）：網址加 `?openExternalBrowser=1`（LINE 自動改用 Safari）先不用：LINE 通知沒有附網址，只有用 LINE 掃 QR、在 LINE 點分享的網址才會遇到
+> - [x] **H7 Android Chrome**（有的話）
 >     - Expect：「進階 → 繼續前往」後能按住說話
+>     - > 使用者（2026-11-20）：pass
 > - [x] **H8 省電（沒人時少找人臉）**：`IDLE_AFTER` 3 秒、`IDLE_FPS` 2、移動偵測
 >     - Expect：沒人時門鎖程式 CPU 明顯下降、溫度不再貼 85°C；走進鏡頭馬上恢復
 >     - > Pi 5（2026-11-20，風扇修好後）：358% → 36～48% CPU，82°C → 57°C，風扇 10,200 → 6,000 RPM，`get_throttled` 0xe0008 → 0xe0000；走進鏡頭恢復還沒在門口實測
 > - [x] **H9 iPhone 長按不跳選單**
 >     - Expect：按住說話 5 秒以上、手指滑到影像上，不會跳「儲存影像」選單
 >     - > 使用者（2026-11-20）：原本會跳；影像區關掉 touch-callout、按鈕擋 touchstart 後「可以了」
-> - [ ] **H10 兩顆喇叭一起響**：`INTERCOM_CHANNEL` 預設改 `both`（他們不喜歡只響一邊）
+> - [x] **H10 兩顆喇叭一起響**：`INTERCOM_CHANNEL` 預設改 `both`（他們不喜歡只響一邊）
 >     - Expect：按住說話、預錄，門外和室內喇叭都有聲音
+>     - > 使用者（2026-11-20）：check
