@@ -112,7 +112,7 @@ class Config:
     # ---- 對講機 ----
     intercom: str = 'auto'                        # auto（有 USB 音效卡就啟用）| 1 | 0 | sim（Mac 開發用測試音）
     audio_device: str = ''                        # 例如 plughw:2,0；空白 = 自動找 USB 音效卡
-    intercom_channel: str = 'left'                # 預錄語音從哪個聲道播：left（門外）| right（室內）| both
+    intercom_channel: str = 'both'                # 對講聲音（說話、預錄）從哪個聲道播：both（兩邊都響）| left（門外）| right（室內）
     speaker_volume: int = 100                     # 啟動時把 USB 卡喇叭音量設成幾 %（這張卡預設 62% 幾乎沒聲音）
     talk_max_seconds: float = 120.0               # 按住說話單次最長秒數
 
@@ -233,7 +233,7 @@ class Config:
             line_cooldown=float(env.get('LINE_COOLDOWN', 300)),
             intercom=env.get('INTERCOM', 'auto'),
             audio_device=env.get('AUDIO_DEVICE', ''),
-            intercom_channel=env.get('INTERCOM_CHANNEL', 'left'),
+            intercom_channel=env.get('INTERCOM_CHANNEL', 'both'),
             speaker_volume=max(0, min(100, int(env.get('SPEAKER_VOLUME', 100)))),
             talk_max_seconds=float(env.get('TALK_MAX_SECONDS', 120)),
         )

@@ -120,7 +120,7 @@ bash deploy/install_service.sh --desktop # 登入桌面後在 Pi 螢幕顯示視
 
 硬體：Waveshare「USB TO AUDIO」免驅動音效卡（內建 2 顆麥克風，Pi 上顯示為「USB PnP Audio Device」）＋兩顆喇叭。
 喇叭接在卡上標著 `VORN / VORP / VOLP / VOLN` 的 4-pin 插座，成套的喇叭是一個插頭直接插上，不用自己接線。
-**左聲道（`VOLP/VOLN`）接門外喇叭、右聲道（`VORP/VORN`）接室內**（`test-audio` 先響的那顆是左聲道）；自己接線的話，BTL 輸出的 N 不是地線，不能接 GND、兩聲道負端不能並在一起。
+**左聲道（`VOLP/VOLN`）接門外喇叭、右聲道（`VORP/VORN`）接室內**（`test-audio` 先響的那顆是左聲道）。說話、預錄預設**兩顆喇叭一起響**（`INTERCOM_CHANNEL=both`），只要門外響就設 `left`；自己接線的話，BTL 輸出的 N 不是地線，不能接 GND、兩聲道負端不能並在一起。
 
 1. 插上音效卡，`python app.py test-audio`：自動找卡 → 喇叭音量設 100% → 錄 5 秒 → 左、右聲道各播一次 → 印音量與 `vcgencmd get_throttled`（不是 `0x0` = 欠壓）
    - 喇叭完全沒聲音：這張卡在 Linux 上的音量刻度不對（`dmesg` 會有「cval->res is probably wrong」），預設 62% 實際幾乎是靜音；程式啟動時會自動設成 100%（`SPEAKER_VOLUME` 可改），手動測試前用 `amixer -c 卡號 sset Speaker 100%`

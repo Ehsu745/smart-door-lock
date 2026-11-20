@@ -258,7 +258,7 @@ def test_slow_listener_drops_oldest(ic):
 # ==========================================
 # 播放
 # ==========================================
-def test_play_left_channel_and_event(ic):
+def test_play_both_channels_and_event(ic):
     ok, msg = ic.play('01 請稍候', '1.2.3.4')
     assert ok and '請稍候' in msg and ic.status()['playing'] == '請稍候'
     ic.speaker.release.set()
@@ -267,7 +267,7 @@ def test_play_left_channel_and_event(ic):
             t.join(2)
     pcm, rate = ic.speaker.played[0]
     stereo = np.frombuffer(pcm, '<i2').reshape(-1, 2)
-    assert rate == 16000 and np.abs(stereo[:, 0]).max() > 0 and not stereo[:, 1].any()
+    assert rate == 16000 and np.abs(stereo[:, 0]).max() > 0 and (stereo[:, 0] == stereo[:, 1]).all()   # 預設兩邊都響
     assert ic.status()['playing'] is None
     assert ic.events[-1].kind == 'intercom_reply' and '請稍候' in ic.events[-1].text
 
@@ -293,7 +293,7 @@ def test_no_speaker(tmp_path):
 PCM = (np.arange(1600) % 200 * 50).astype('<i2').tobytes()      # 0.1 秒
 
 
-def test_talk_plays_on_left_channel_and_logs_seconds(ic):
+def test_talk_plays_on_both_channels_and_logs_seconds(ic):
     ok, _, tid = ic.talk_start('1.2.3.4')
     assert ok and ic.status()['talking']
     for _ in range(10):
@@ -303,7 +303,7 @@ def test_talk_plays_on_left_channel_and_logs_seconds(ic):
     stream = ic.speaker.streams[0]
     stereo = np.frombuffer(bytes(stream.data), '<i2').reshape(-1, 2)
     assert stream.rate == 16000 and stream.closed and len(stereo) == 16000
-    assert stereo[:, 0].any() and not stereo[:, 1].any()
+    assert stereo[:, 0].any() and (stereo[:, 0] == stereo[:, 1]).all()
     assert not ic.status()['talking']
     assert ic.events[-1].kind == 'intercom_talk' and '1 秒' in ic.events[-1].text
 
@@ -463,7 +463,7 @@ def test_audio_feed_streams_pcm(ic):
 
 def test_settings_shows_intercom(ic):
     _, c = web(ic)
-    assert c.get('/api/settings').get_json()['intercom'] == {'device': '', 'channel': 'left', 'clips': 2}
+    assert c.get('/api/settings').get_json()['intercom'] == {'device': '', 'channel': 'both', 'clips': 2}
 
 
 def test_talk_api_needs_login_then_streams(ic):

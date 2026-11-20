@@ -259,13 +259,13 @@ class TalkSession:
 # 對講機
 # ==========================================
 class Intercom:
-    def __init__(self, sounds_dir: Path, bus=None, mic_factory=None, speaker=None, channel='left',
+    def __init__(self, sounds_dir: Path, bus=None, mic_factory=None, speaker=None, channel='both',
                  clock=time.monotonic, name=''):
         self.sounds_dir = Path(sounds_dir)
         self.bus = bus
         self.mic_factory = mic_factory          # None = 沒有麥克風（只能播放或完全停用）
         self.speaker = speaker
-        self.channel = channel if channel in CHANNELS else 'left'
+        self.channel = channel if channel in CHANNELS else 'both'
         self.clock = clock
         self.name = name                        # 裝置名稱，顯示在設定頁
         self._listeners = []
