@@ -6,21 +6,11 @@ sticker: lucide//activity
 > [!IMPORTANT]
 > **LLM Instructions**: Each `/cmd-*` command is an agent skill (`LLM/skills/`); shared rules are in [[LLM_GUIDE]]. `/cmd-sync` keeps this list.
 
-## 🚀 Today's Progress (2026-11-23)
-> [!abstract]- 1 item
-> - **v2.11 合併進 main**：PR #6 merged `5e1a57c`，`feat/https-talk` 已刪；Group H 移到 Archive
+## 🚀 Today's Progress (2026-11-24)
 
-## 📅 Yesterday's Progress (2026-11-20)
-> [!abstract]- 9 items
-> - **Pi 5 部署 v2.11**：216 passed；首次啟動自動產生憑證，http 轉 https
-> - **Arduino 連上了**：Pi 5 認得 UNO，開關鎖測試通過；裝門鎖前照用 `--sim`
-> - **Pi 5 風扇接觸不良**：喬好排線後恢復正常轉速
-> - **省電模式**：沒人時 CPU 358% → 約 40%、82°C → 57°C
-> - **按住說話變快**：麥克風預熱，第二次按下馬上能講；擋掉 iPhone 長按選單
-> - **兩顆喇叭一起響**：`INTERCOM_CHANNEL` 預設改 `both`
-> - **指令速查**：加 SSH、Pi 5 燈號、Arduino 章節
-> - **PR #6（v2.11）**：Group H 全部通過
-> - **Pi 5 專案備份到 Mac**：鏡像同步到 `pi5_door_pi_gesture_20261120/`（不含 `.venv`），不進 git
+## 📅 Yesterday's Progress (2026-11-23)
+> [!abstract]- 1 items
+> - **v2.11 合併進 main**：PR #6 merged `5e1a57c`，`feat/https-talk` 已刪；Group H 移到 Archive
 
 ---
 
