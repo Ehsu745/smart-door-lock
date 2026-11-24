@@ -6,29 +6,27 @@ sticker: lucide//activity
 > [!IMPORTANT]
 > **LLM Instructions**: Each `/cmd-*` command is an agent skill (`LLM/skills/`); shared rules are in [[LLM_GUIDE]]. `/cmd-sync` keeps this list.
 
-## 🚀 Today's Progress (2026-11-20)
+## 🚀 Today's Progress (2026-11-24)
 
-## 📅 Yesterday's Progress (2026-11-18)
-> [!abstract]- 4 items
-> - **Arduino 暫緩到裝門鎖**：偵測不到是 USB 那層；demo 已測過開關鎖，裝鎖前一律 `--sim`
-> - **按住說話 + HTTPS（v2.11）**：Pi 自簽憑證、同埠 http 轉 https、半雙工按住說話；Mac 測過，commit 並開 PR #6（draft）
-> - **rollover 自動建日記**：`rollover.py` 找不到日記或還是原始範本時，自己照範本規則建立
-> - **rollover 11-17**：完成
+## 📅 Yesterday's Progress (2026-11-23)
+> [!abstract]- 1 items
+> - **v2.11 合併進 main**：PR #6 merged `5e1a57c`，`feat/https-talk` 已刪；Group H 移到 Archive
 
 ---
 
 ## ⏳ Ongoing Progress
 ### 🍓 [PI] Pi 5 實機驗證
-> [!todo]- 7 open
+> [!todo]- 8 open
 > - **v2.6～v2.10 已部署到 Pi 5（11-17），門口實測還沒做**（細項：[[Test Queue]] A～G）：
 >     - [ ] **人臉 SFace**：等相機固定在門框；門口光線下本人距離分布、戴 / 不戴眼鏡、Pi 5 速度（Group A）
 >     - [ ] **回報誤認**：margin 3 / floor 35 用門口資料驗證（Group B）
 >     - [ ] **手勢綁定**：eric、jenny 都還沒綁；Pi 上實測、iPhone / LINE 內建瀏覽器滾輪手感（Group C）
 >     - [ ] **check-face / 補拍**：相機裝好就跑（Group D）
->     - [/] **對講機**：硬體通了；剩門口 1 m 收音、LINE 內建瀏覽器、重插後自動音量、聆聽免 PIN 手機實測（Group E、G）
+>     - [/] **對講機**：硬體通了，iPhone 聆聽 / 說話 / 兩顆喇叭都測過；剩門口 1 m 收音、重插後自動音量（Group E、G）
 >     - [ ] **正式模式**：systemd、網頁刪除成員耗時、LINE 真實發送（Group F）；Arduino 已通（F1），裝門鎖前照用 `--sim`
->     - [/] **按住說話 + HTTPS（v2.11，`feat/https-talk`，PR #6 draft）**：Pi 5 + iPhone 通過 H1～H4、H8、H9（11-20）；H1～H10 全部通過，可以合併；11-20 的修改已推上 PR #6（Group H）
+>     - [x] **按住說話 + HTTPS + 省電（v2.11）**：PR #6 merged `5e1a57c`（11-23），Group H 全部通過、已歸檔
 > - [x] **成員權限**：Pi 上 jenny 是 master、eric 是 guest，使用者確認維持不變（11-17）
+> - [?] **kiwi 沒登錄成功？**：Pi 上 `faces/` 有 60 張 kiwi（11-20 14:10 拍），但 `id_map.txt` 只有 eric、jenny；還沒 train 或登錄失敗，待查
 
 ---
 ### 🔩 [HW] 硬體
@@ -54,8 +52,8 @@ sticker: lucide//activity
 > - [ ] **可靠度第一優先**：控制器裝門內、門磁、連續失敗鎖定、用實測資料定門檻（[[提高可靠度]]）
 > - [ ] **活體偵測**：先做軟體（防偽模型、眨眼），用攻擊測試數據決定要不要買 ToF / IR（[[提高可靠度]]）
 > - [ ] **對講機階段 3：門鈴**（[[對講機]]）
-> - [>] **對講機階段 4：手機對門口講話**：v2.11 做完（自簽憑證，不用 Tailscale），等 Pi 5 測試（[[Test Queue]] H）
-> - [/] **軟體移動偵測 + 效能量測**：省電模式做完（`feat/https-talk`）：沒人時 358% → 約 40% CPU、82°C → 57°C；門口有人走動時的恢復速度還沒實測
+> - [x] **對講機階段 4：手機對門口講話**：v2.11 Pi 5 + iPhone 測過（自簽憑證、按住說話），PR #6 已合併（[[Test Queue Archive]] H）
+> - [/] **軟體移動偵測 + 效能量測**：省電模式做完（v2.11 已合併）：沒人時 358% → 約 40% CPU、82°C → 57°C；門口有人走動時的恢復速度還沒實測
 
 ---
 ### 🧹 [MISC] 雜項
